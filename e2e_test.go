@@ -153,6 +153,33 @@ func TestCLIEndToEndSnoozeFlow(t *testing.T) {
 	}
 }
 
+func TestCLIEndToEndStopCountsAsOverride(t *testing.T) {
+	t.Parallel()
+
+	env := newCLIEnv(t)
+
+	start := runCurfew(t, env, "", "start")
+	if start.exitCode != 0 {
+		t.Fatalf("start exit code = %d, stderr = %s", start.exitCode, start.stderr)
+	}
+
+	stop := runCurfew(t, env, "i am choosing to break my own rule\n", "stop")
+	if stop.exitCode != 0 {
+		t.Fatalf("stop exit code = %d, stderr = %s", stop.exitCode, stop.stderr)
+	}
+	if !strings.Contains(stop.stdout, "Curfew disabled") {
+		t.Fatalf("expected stop output, got:\n%s", stop.stdout)
+	}
+
+	history := runCurfew(t, env, "", "history", "--days", "7")
+	if history.exitCode != 0 {
+		t.Fatalf("history exit code = %d, stderr = %s", history.exitCode, history.stderr)
+	}
+	if !strings.Contains(history.stdout, "overrode") {
+		t.Fatalf("expected stop to count as an override, got:\n%s", history.stdout)
+	}
+}
+
 func newCLIEnv(t *testing.T) map[string]string {
 	t.Helper()
 

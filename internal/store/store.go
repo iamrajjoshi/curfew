@@ -49,8 +49,8 @@ type Stats struct {
 type Store interface {
 	RecordEvent(context.Context, Event) error
 	UpsertSession(context.Context, SessionRecord) error
-	History(context.Context, int) ([]HistoryRecord, error)
-	Stats(context.Context, int) (Stats, error)
-	Purge(context.Context, int) error
+	History(context.Context, string) ([]HistoryRecord, error)
+	Stats(context.Context, string) (Stats, error)
+	Purge(context.Context, string) error
 	Close() error
 }

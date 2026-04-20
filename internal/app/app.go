@@ -172,7 +172,7 @@ func (a *App) Check(ctx context.Context, raw string, opts CheckOptions) (CheckRe
 	}
 
 	now := a.Now()
-	_ = a.Store.Purge(ctx, cfg.Logging.RetainDays)
+	_ = a.Store.Purge(ctx, retentionStartDate(cfg, now, cfg.Logging.RetainDays))
 
 	eval, err := schedule.Evaluate(now, cfg)
 	if err != nil {
@@ -208,7 +208,7 @@ func (a *App) Check(ctx context.Context, raw string, opts CheckOptions) (CheckRe
 				Outcome:     "allowed",
 				Tier:        string(tier),
 				Shell:       opts.Shell,
-			}, cfg, runtimeState.Sessions[currentSession.Date])
+			}, *currentSession, runtimeState.Sessions[currentSession.Date], &now)
 		}
 		return result, nil
 	}
@@ -346,11 +346,27 @@ func (a *App) Snooze(ctx context.Context, duration time.Duration) (schedule.Sess
 }
 
 func (a *App) History(ctx context.Context, days int) ([]store.HistoryRecord, error) {
-	return a.Store.History(ctx, days)
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	now := a.Now()
+	if err := a.materializeCompletedSessions(ctx, cfg, now, days); err != nil {
+		return nil, err
+	}
+	return a.Store.History(ctx, historyStartDate(cfg, now, days))
 }
 
 func (a *App) Stats(ctx context.Context, days int) (store.Stats, error) {
-	return a.Store.Stats(ctx, days)
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return store.Stats{}, err
+	}
+	now := a.Now()
+	if err := a.materializeCompletedSessions(ctx, cfg, now, days); err != nil {
+		return store.Stats{}, err
+	}
+	return a.Store.Stats(ctx, historyStartDate(cfg, now, days))
 }
 
 func (a *App) AddRule(pattern string, action string) error {
@@ -406,17 +422,27 @@ func (a *App) disableSession(ctx context.Context, skipped bool, reason string, i
 	if err != nil {
 		return schedule.Session{}, err
 	}
+	runtimeState, err := a.Runtime.Read()
+	if err != nil {
+		return schedule.Session{}, err
+	}
+	currentSession, tier, _, _, _ := effectiveSession(eval, runtimeState, now)
 	target := eval.Next
-	if eval.Current != nil {
-		target = *eval.Current
+	promptTier := schedule.TierCurfew
+	if currentSession != nil {
+		target = *currentSession
+		promptTier = tier
 	}
 
-	profile := friction.EffectiveProfile(cfg, "block", schedule.TierCurfew)
-	allowed, _, err := friction.Run(profile, friction.IO{In: in, Out: out}, reason)
+	profile := friction.EffectiveProfile(cfg, "block", promptTier)
+	allowed, outcome, err := friction.Run(profile, friction.IO{In: in, Out: out}, reason)
 	if err != nil {
 		return schedule.Session{}, err
 	}
 	if !allowed {
+		if promptTier == schedule.TierHardStop {
+			return schedule.Session{}, errors.New("curfew cannot be disabled during hard stop")
+		}
 		return schedule.Session{}, errors.New("override cancelled")
 	}
 
@@ -437,10 +463,19 @@ func (a *App) disableSession(ctx context.Context, skipped bool, reason string, i
 		Date:              target.Date,
 		BedtimeConfigured: target.BedtimeText,
 		WakeConfigured:    target.WakeText,
+		LastCommandAt:     &now,
 		SnoozesUsed:       updated.Sessions[target.Date].SnoozesUsed,
 		Skipped:           skipped,
 	}
 	_ = a.Store.UpsertSession(ctx, record)
+	_ = a.Store.RecordEvent(ctx, store.Event{
+		SessionDate: target.Date,
+		Timestamp:   now,
+		Command:     ternary(skipped, "curfew skip tonight", "curfew stop"),
+		Action:      "override",
+		Outcome:     outcome,
+		Tier:        string(promptTier),
+	})
 	return target, nil
 }
 
@@ -490,18 +525,74 @@ func effectiveSession(eval schedule.Evaluation, state runtime.File, now time.Tim
 	return session, tier, forced, disabled, snoozedUntil
 }
 
-func (a *App) logEvent(ctx context.Context, event store.Event, cfg config.Config, state runtime.SessionState) {
+func (a *App) logEvent(ctx context.Context, event store.Event, session schedule.Session, state runtime.SessionState, lastCommandAt *time.Time) {
 	_ = a.Store.RecordEvent(ctx, event)
 	_ = a.Store.UpsertSession(ctx, store.SessionRecord{
 		Date:              event.SessionDate,
-		BedtimeConfigured: "",
-		WakeConfigured:    "",
+		BedtimeConfigured: session.BedtimeText,
+		WakeConfigured:    session.WakeText,
+		LastCommandAt:     lastCommandAt,
 		SnoozesUsed:       state.SnoozesUsed,
 	})
 }
 
+func (a *App) materializeCompletedSessions(ctx context.Context, cfg config.Config, now time.Time, days int) error {
+	location, err := schedule.ResolveLocation(cfg.Schedule.Timezone)
+	if err != nil {
+		return err
+	}
+	now = now.In(location)
+	for offset := 0; offset <= max(days, 1); offset++ {
+		date := time.Date(now.Year(), now.Month(), now.Day()-offset, 0, 0, 0, 0, location)
+		session, err := schedule.SessionForDate(date, cfg, location)
+		if err != nil {
+			return err
+		}
+		if session.Wake.After(now) {
+			continue
+		}
+		if err := a.Store.UpsertSession(ctx, store.SessionRecord{
+			Date:              session.Date,
+			BedtimeConfigured: session.BedtimeText,
+			WakeConfigured:    session.WakeText,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func historyStartDate(cfg config.Config, now time.Time, days int) string {
+	location, err := schedule.ResolveLocation(cfg.Schedule.Timezone)
+	if err != nil {
+		return now.Format("2006-01-02")
+	}
+	if days < 0 {
+		days = 0
+	}
+	return now.In(location).AddDate(0, 0, -days).Format("2006-01-02")
+}
+
+func retentionStartDate(cfg config.Config, now time.Time, retainDays int) string {
+	location, err := schedule.ResolveLocation(cfg.Schedule.Timezone)
+	if err != nil {
+		return now.Format("2006-01-02")
+	}
+	if retainDays < 0 {
+		retainDays = 0
+	}
+	return now.In(location).AddDate(0, 0, -retainDays).Format("2006-01-02")
+}
+
 func max(left int, right int) int {
 	if left > right {
+		return left
+	}
+	return right
+}
+
+func ternary[T any](condition bool, left T, right T) T {
+	if condition {
 		return left
 	}
 	return right

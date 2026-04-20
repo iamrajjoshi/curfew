@@ -55,19 +55,17 @@ func TestCheckHistoryStatsAndSnooze(t *testing.T) {
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
-	if len(history) != 1 {
-		t.Fatalf("history records = %d, want 1", len(history))
-	}
-	if history[0].Status != "overrode" {
-		t.Fatalf("history status = %q, want overrode", history[0].Status)
+	record := findHistoryRecord(t, history, "2026-04-23")
+	if record.Status != "overrode" {
+		t.Fatalf("history status = %q, want overrode", record.Status)
 	}
 
 	stats, err := application.Stats(context.Background(), 7)
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
-	if stats.OverriddenNights != 1 {
-		t.Fatalf("overridden nights = %d, want 1", stats.OverriddenNights)
+	if stats.OverriddenNights < 1 {
+		t.Fatalf("overridden nights = %d, want at least 1", stats.OverriddenNights)
 	}
 	if stats.MostAttemptedCommand != "claude" {
 		t.Fatalf("most attempted command = %q, want claude", stats.MostAttemptedCommand)
@@ -112,7 +110,7 @@ func TestStopAndSkipDisableTheSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load location: %v", err)
 	}
-	now := time.Date(2026, 4, 24, 23, 30, 0, 0, location)
+	now := time.Date(2026, 4, 22, 23, 30, 0, 0, location)
 	application, clock := newTestApp(t, now)
 
 	stopSession, err := application.StopTonight(
@@ -124,8 +122,8 @@ func TestStopAndSkipDisableTheSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stop tonight: %v", err)
 	}
-	if stopSession.Date != "2026-04-24" {
-		t.Fatalf("stop session = %q, want 2026-04-24", stopSession.Date)
+	if stopSession.Date != "2026-04-22" {
+		t.Fatalf("stop session = %q, want 2026-04-22", stopSession.Date)
 	}
 
 	status, err := application.EvaluateStatus()
@@ -135,8 +133,15 @@ func TestStopAndSkipDisableTheSession(t *testing.T) {
 	if !status.Disabled {
 		t.Fatal("expected stop tonight to disable the current session")
 	}
+	history, err := application.History(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("history after stop: %v", err)
+	}
+	if record := findHistoryRecord(t, history, "2026-04-22"); record.Status != "overrode" {
+		t.Fatalf("expected stop to register as an override, got %+v", record)
+	}
 
-	clock.now = time.Date(2026, 4, 25, 23, 45, 0, 0, location)
+	clock.now = time.Date(2026, 4, 23, 23, 45, 0, 0, location)
 	skipSession, err := application.SkipTonight(
 		context.Background(),
 		"Skip tonight's curfew?",
@@ -146,17 +151,91 @@ func TestStopAndSkipDisableTheSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("skip tonight: %v", err)
 	}
-	if skipSession.Date != "2026-04-25" {
-		t.Fatalf("skip session = %q, want 2026-04-25", skipSession.Date)
+	if skipSession.Date != "2026-04-23" {
+		t.Fatalf("skip session = %q, want 2026-04-23", skipSession.Date)
 	}
 
-	history, err := application.History(context.Background(), 7)
+	history, err = application.History(context.Background(), 7)
 	if err != nil {
 		t.Fatalf("history after skip: %v", err)
 	}
-	if len(history) == 0 || history[0].Status != "overrode" {
-		t.Fatalf("expected skip to register as an override, got %+v", history)
+	if record := findHistoryRecord(t, history, "2026-04-23"); record.Status != "overrode" {
+		t.Fatalf("expected skip to register as an override, got %+v", record)
 	}
+}
+
+func TestHardStopPreventsStopOverride(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	now := time.Date(2026, 4, 25, 1, 30, 0, 0, location)
+	application, _ := newTestApp(t, now)
+
+	_, err = application.StopTonight(
+		context.Background(),
+		"Disable curfew for the rest of this session?",
+		strings.NewReader("i am choosing to break my own rule\n"),
+		&strings.Builder{},
+	)
+	if err == nil {
+		t.Fatal("expected hard stop to reject the stop override")
+	}
+	if !strings.Contains(err.Error(), "hard stop") {
+		t.Fatalf("expected a hard-stop error, got %v", err)
+	}
+
+	status, err := application.EvaluateStatus()
+	if err != nil {
+		t.Fatalf("evaluate status after failed stop: %v", err)
+	}
+	if status.Disabled {
+		t.Fatal("hard stop should not disable the session")
+	}
+}
+
+func TestQuietCompletedSessionsAppearInHistoryAndStats(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	now := time.Date(2026, 4, 21, 12, 0, 0, 0, location)
+	application, _ := newTestApp(t, now)
+
+	history, err := application.History(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if record := findHistoryRecord(t, history, "2026-04-20"); record.Status != "respected" {
+		t.Fatalf("expected 2026-04-20 to be respected, got %+v", record)
+	}
+	if record := findHistoryRecord(t, history, "2026-04-19"); record.Status != "respected" {
+		t.Fatalf("expected 2026-04-19 to be respected, got %+v", record)
+	}
+
+	stats, err := application.Stats(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if stats.RespectedNights < 2 {
+		t.Fatalf("respected nights = %d, want at least 2", stats.RespectedNights)
+	}
+}
+
+func findHistoryRecord(t *testing.T, history []store.HistoryRecord, date string) store.HistoryRecord {
+	t.Helper()
+
+	for _, record := range history {
+		if record.Date == date {
+			return record
+		}
+	}
+	t.Fatalf("date %s not found in history: %+v", date, history)
+	return store.HistoryRecord{}
 }
 
 type testClock struct {

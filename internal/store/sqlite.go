@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -116,7 +115,7 @@ func (s *SQLite) UpsertSession(ctx context.Context, record SessionRecord) error 
 	return err
 }
 
-func (s *SQLite) History(ctx context.Context, days int) ([]HistoryRecord, error) {
+func (s *SQLite) History(ctx context.Context, startDate string) ([]HistoryRecord, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
 		`WITH event_rollup AS (
@@ -125,7 +124,7 @@ func (s *SQLite) History(ctx context.Context, days int) ([]HistoryRecord, error)
 			  SUM(CASE WHEN outcome = 'blocked' THEN 1 ELSE 0 END) AS blocked_count,
 			  SUM(CASE WHEN outcome = 'overridden' THEN 1 ELSE 0 END) AS overridden_count
 			FROM events
-			WHERE session_date >= date('now', printf('-%d day', ?))
+			WHERE session_date >= ?
 			GROUP BY session_date
 		)
 		SELECT
@@ -137,9 +136,9 @@ func (s *SQLite) History(ctx context.Context, days int) ([]HistoryRecord, error)
 		  s.skipped
 		FROM sessions s
 		LEFT JOIN event_rollup e ON e.session_date = s.date
-		WHERE s.date >= date('now', printf('-%d day', ?))
+		WHERE s.date >= ?
 		ORDER BY s.date DESC`,
-		days, days,
+		startDate, startDate,
 	)
 	if err != nil {
 		return nil, err
@@ -166,8 +165,8 @@ func (s *SQLite) History(ctx context.Context, days int) ([]HistoryRecord, error)
 	return history, rows.Err()
 }
 
-func (s *SQLite) Stats(ctx context.Context, days int) (Stats, error) {
-	history, err := s.History(ctx, days)
+func (s *SQLite) Stats(ctx context.Context, startDate string) (Stats, error) {
+	history, err := s.History(ctx, startDate)
 	if err != nil {
 		return Stats{}, err
 	}
@@ -209,24 +208,23 @@ func (s *SQLite) Stats(ctx context.Context, days int) (Stats, error) {
 		ctx,
 		`SELECT command, COUNT(*)
 		 FROM events
-		 WHERE session_date >= date('now', printf('-%d day', ?))
+		 WHERE session_date >= ?
 		   AND action IN ('block', 'warn', 'delay')
 		 GROUP BY command
 		 ORDER BY COUNT(*) DESC, command ASC
 		 LIMIT 1`,
-		days,
+		startDate,
 	)
 	_ = row.Scan(&stats.MostAttemptedCommand, &stats.MostAttemptedCount)
 
 	return stats, nil
 }
 
-func (s *SQLite) Purge(ctx context.Context, retainDays int) error {
-	cutoff := fmt.Sprintf("-%d day", retainDays)
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE session_date < date('now', ?)`, cutoff); err != nil {
+func (s *SQLite) Purge(ctx context.Context, startDate string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE session_date < ?`, startDate); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE date < date('now', ?)`, cutoff)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE date < ?`, startDate)
 	return err
 }
 
