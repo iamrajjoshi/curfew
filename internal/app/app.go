@@ -57,6 +57,13 @@ type Status struct {
 	Timezone     string
 }
 
+type DisableRequest struct {
+	Target  schedule.Session
+	Tier    schedule.Tier
+	Profile friction.Profile
+	Reason  string
+}
+
 func New() (*App, error) {
 	layout, err := paths.Discover()
 	if err != nil {
@@ -299,6 +306,28 @@ func (a *App) SkipTonight(ctx context.Context, reason string, in io.Reader, out 
 	return a.disableSession(ctx, true, reason, in, out)
 }
 
+func (a *App) StopTonightApproved(ctx context.Context) (schedule.Session, error) {
+	request, err := a.DisableRequest(false, "Disable curfew for the rest of this session?")
+	if err != nil {
+		return schedule.Session{}, err
+	}
+	if request.Tier == schedule.TierHardStop {
+		return schedule.Session{}, errors.New("curfew cannot be disabled during hard stop")
+	}
+	return a.applyDisabledSession(ctx, request.Target, request.Tier, false, "overridden")
+}
+
+func (a *App) SkipTonightApproved(ctx context.Context) (schedule.Session, error) {
+	request, err := a.DisableRequest(true, "Skip tonight's curfew?")
+	if err != nil {
+		return schedule.Session{}, err
+	}
+	if request.Tier == schedule.TierHardStop {
+		return schedule.Session{}, errors.New("curfew cannot be disabled during hard stop")
+	}
+	return a.applyDisabledSession(ctx, request.Target, request.Tier, true, "overridden")
+}
+
 func (a *App) Snooze(ctx context.Context, duration time.Duration) (schedule.Session, time.Time, int, error) {
 	cfg, err := a.LoadConfig()
 	if err != nil {
@@ -413,18 +442,37 @@ func (a *App) JSON(v any) string {
 }
 
 func (a *App) disableSession(ctx context.Context, skipped bool, reason string, in io.Reader, out io.Writer) (schedule.Session, error) {
-	cfg, err := a.LoadConfig()
+	request, err := a.DisableRequest(skipped, reason)
 	if err != nil {
 		return schedule.Session{}, err
+	}
+
+	allowed, outcome, err := friction.Run(request.Profile, friction.IO{In: in, Out: out}, request.Reason)
+	if err != nil {
+		return schedule.Session{}, err
+	}
+	if !allowed {
+		if request.Tier == schedule.TierHardStop {
+			return schedule.Session{}, errors.New("curfew cannot be disabled during hard stop")
+		}
+		return schedule.Session{}, errors.New("override cancelled")
+	}
+	return a.applyDisabledSession(ctx, request.Target, request.Tier, skipped, outcome)
+}
+
+func (a *App) DisableRequest(skipped bool, reason string) (DisableRequest, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return DisableRequest{}, err
 	}
 	now := a.Now()
 	eval, err := schedule.Evaluate(now, cfg)
 	if err != nil {
-		return schedule.Session{}, err
+		return DisableRequest{}, err
 	}
 	runtimeState, err := a.Runtime.Read()
 	if err != nil {
-		return schedule.Session{}, err
+		return DisableRequest{}, err
 	}
 	currentSession, tier, _, _, _ := effectiveSession(eval, runtimeState, now)
 	target := eval.Next
@@ -434,18 +482,16 @@ func (a *App) disableSession(ctx context.Context, skipped bool, reason string, i
 		promptTier = tier
 	}
 
-	profile := friction.EffectiveProfile(cfg, "block", promptTier)
-	allowed, outcome, err := friction.Run(profile, friction.IO{In: in, Out: out}, reason)
-	if err != nil {
-		return schedule.Session{}, err
-	}
-	if !allowed {
-		if promptTier == schedule.TierHardStop {
-			return schedule.Session{}, errors.New("curfew cannot be disabled during hard stop")
-		}
-		return schedule.Session{}, errors.New("override cancelled")
-	}
+	return DisableRequest{
+		Target:  target,
+		Tier:    promptTier,
+		Profile: friction.EffectiveProfile(cfg, "block", promptTier),
+		Reason:  reason,
+	}, nil
+}
 
+func (a *App) applyDisabledSession(ctx context.Context, target schedule.Session, tier schedule.Tier, skipped bool, outcome string) (schedule.Session, error) {
+	now := a.Now()
 	updated, err := a.Runtime.Update(now, func(file *runtime.File) error {
 		state := file.Sessions[target.Date]
 		state.Disabled = true
@@ -474,7 +520,7 @@ func (a *App) disableSession(ctx context.Context, skipped bool, reason string, i
 		Command:     ternary(skipped, "curfew skip tonight", "curfew stop"),
 		Action:      "override",
 		Outcome:     outcome,
-		Tier:        string(promptTier),
+		Tier:        string(tier),
 	})
 	return target, nil
 }

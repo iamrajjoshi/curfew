@@ -3,18 +3,16 @@ package tui
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rajjoshi/curfew/internal/app"
 	"github.com/rajjoshi/curfew/internal/config"
-	"github.com/rajjoshi/curfew/internal/friction"
-	"github.com/rajjoshi/curfew/internal/rules"
-	"github.com/rajjoshi/curfew/internal/schedule"
 	"github.com/rajjoshi/curfew/internal/store"
 )
 
@@ -32,58 +30,113 @@ var tabs = []tab{
 	{key: "stats", label: "Stats"},
 }
 
-type snapshot struct {
-	Config  config.Config
+type runtimeSnapshot struct {
 	Status  app.Status
-	Rules   []config.RuleEntry
 	History []store.HistoryRecord
 	Stats   store.Stats
 }
 
 type snapshotMsg struct {
-	data snapshot
-	err  error
+	config    *config.Config
+	runtime   runtimeSnapshot
+	syncDraft bool
+	err       error
 }
 
-type snoozeMsg struct {
-	status app.Status
+type saveMsg struct {
+	err error
+}
+
+type actionMsg struct {
+	flash  string
 	err    error
+	reload bool
+}
+
+type modalSubmittedMsg struct{}
+type modalCancelledMsg struct{}
+
+type modalState struct {
+	title string
+	form  *huh.Form
+	apply func(*model) (bool, tea.Cmd)
+}
+
+type dashboardTab struct{}
+
+type scheduleTab struct {
+	selectedDay int
+}
+
+type rulesTab struct {
+	selected     int
+	probeInput   textinput.Model
+	probeFocused bool
+}
+
+type overrideTab struct{}
+
+type historyTab struct {
+	scroll int
+}
+
+type statsTab struct {
+	scroll int
 }
 
 type model struct {
-	app       *app.App
-	activeTab int
-	width     int
-	height    int
-	helpOpen  bool
-	loading   bool
-	flash     string
-	err       error
-	snapshot  snapshot
-	ruleInput textinput.Model
+	app          *app.App
+	activeTab    int
+	width        int
+	height       int
+	helpOpen     bool
+	loading      bool
+	flash        string
+	err          error
+	confirmQuit  bool
+	historyDays  int
+	statsDays    int
+	persisted    config.Config
+	draft        config.Config
+	dirty        bool
+	validation   error
+	runtime      runtimeSnapshot
+	modal        *modalState
+	dashboardTab dashboardTab
+	scheduleTab  scheduleTab
+	rulesTab     rulesTab
+	overrideTab  overrideTab
+	historyTab   historyTab
+	statsTab     statsTab
 }
 
 func Run(application *app.App, initialTab string) error {
-	input := textinput.New()
-	input.Placeholder = "try a command"
-	input.CharLimit = 200
-	input.Width = 50
-	input.Focus()
-
-	m := model{
-		app:       application,
-		activeTab: tabIndex(initialTab),
-		loading:   true,
-		ruleInput: input,
-	}
-
-	program := tea.NewProgram(m, tea.WithAltScreen())
+	program := tea.NewProgram(newModel(application, initialTab), tea.WithAltScreen())
 	_, err := program.Run()
 	return err
 }
 
+func newModel(application *app.App, initialTab string) model {
+	probe := textinput.New()
+	probe.Placeholder = "try a command"
+	probe.CharLimit = 200
+	probe.Width = 50
+
+	return model{
+		app:         application,
+		activeTab:   tabIndex(initialTab),
+		loading:     true,
+		historyDays: 30,
+		statsDays:   30,
+		scheduleTab: scheduleTab{selectedDay: 0},
+		rulesTab: rulesTab{
+			probeInput: probe,
+		},
+	}
+}
+
 func (m model) Init() tea.Cmd {
-	return m.loadSnapshot()
+	return m.loadSnapshot(true)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -91,95 +144,227 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = message.Width
 		m.height = message.Height
+		if m.modal != nil {
+			m.modal.form.WithWidth(maxInt(40, m.width-12))
+		}
 		return m, nil
-	case tea.KeyMsg:
-		if m.loading {
-			if message.String() == "ctrl+c" {
-				return m, tea.Quit
-			}
+	case snapshotMsg:
+		m.loading = false
+		if message.err != nil {
+			m.err = message.err
 			return m, nil
 		}
+		m.err = nil
+		if message.config != nil {
+			m.persisted = config.Clone(*message.config)
+			if message.syncDraft {
+				m.draft = config.Clone(*message.config)
+				m.syncDraftState()
+				m.confirmQuit = false
+			}
+		}
+		m.runtime = message.runtime
+		m.rulesTab.clamp(m.draft)
+		m.historyTab.clamp(m.runtime.History)
+		m.statsTab.clamp()
+		if m.flash == "Refreshing..." {
+			m.flash = "Refreshed."
+		}
+		return m, nil
+	case saveMsg:
+		m.loading = false
+		if message.err != nil {
+			m.flash = message.err.Error()
+			return m, nil
+		}
+		m.flash = "Saved config."
+		m.loading = true
+		return m, m.loadSnapshot(true)
+	case actionMsg:
+		if message.err != nil {
+			m.flash = message.err.Error()
+			m.loading = false
+			return m, nil
+		}
+		if message.flash != "" {
+			m.flash = message.flash
+		}
+		if message.reload {
+			m.loading = true
+			return m, m.loadSnapshot(false)
+		}
+		return m, nil
+	case modalSubmittedMsg:
+		if m.modal == nil {
+			return m, nil
+		}
+		closeModal, cmd := m.modal.apply(&m)
+		if closeModal {
+			m.modal = nil
+			m.syncDraftState()
+		}
+		return m, cmd
+	case modalCancelledMsg:
+		m.modal = nil
+		return m, nil
+	}
 
-		switch message.String() {
-		case "ctrl+c", "q":
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if m.modal != nil {
+			updated, cmd := m.modal.form.Update(keyMsg)
+			m.modal.form = updated.(*huh.Form)
+			return m, cmd
+		}
+		if tabs[m.activeTab].key == "rules" && m.rulesTab.probeFocused {
+			switch keyMsg.String() {
+			case "ctrl+c", "ctrl+s", "ctrl+r":
+			default:
+				return m.dispatchTabUpdate(msg)
+			}
+		}
+
+		switch keyMsg.String() {
+		case "ctrl+c":
+			if m.dirty && !m.confirmQuit {
+				m.confirmQuit = true
+				m.flash = "Unsaved changes. Press q or ctrl+c again to quit without saving."
+				return m, nil
+			}
 			return m, tea.Quit
+		case "q":
+			if m.dirty && !m.confirmQuit {
+				m.confirmQuit = true
+				m.flash = "Unsaved changes. Press q again to quit without saving, or ctrl+s to save."
+				return m, nil
+			}
+			return m, tea.Quit
+		case "ctrl+s":
+			if m.validation != nil {
+				m.flash = fmt.Sprintf("Fix validation errors before saving: %v", m.validation)
+				return m, nil
+			}
+			m.loading = true
+			m.flash = "Saving..."
+			return m, m.saveDraft()
+		case "ctrl+r":
+			if !m.dirty {
+				m.flash = "No unsaved changes to discard."
+				return m, nil
+			}
+			m.loading = true
+			m.flash = "Reloading config from disk..."
+			return m, m.loadSnapshot(true)
+		case "?":
+			m.helpOpen = !m.helpOpen
+			return m, nil
 		case "tab", "l", "right":
 			m.activeTab = (m.activeTab + 1) % len(tabs)
+			m.confirmQuit = false
 			return m, nil
 		case "shift+tab", "h", "left":
 			m.activeTab = (m.activeTab + len(tabs) - 1) % len(tabs)
-			return m, nil
-		case "?":
-			m.helpOpen = !m.helpOpen
+			m.confirmQuit = false
 			return m, nil
 		case "r":
 			m.loading = true
 			m.flash = "Refreshing..."
-			return m, m.loadSnapshot()
-		case "s":
-			if tabs[m.activeTab].key == "dashboard" {
-				return m, m.snooze()
-			}
+			return m, m.loadSnapshot(false)
 		}
-
-		if tabs[m.activeTab].key == "rules" {
-			var cmd tea.Cmd
-			m.ruleInput, cmd = m.ruleInput.Update(message)
-			return m, cmd
-		}
-	case snapshotMsg:
-		m.loading = false
-		m.err = message.err
-		if message.err == nil {
-			m.snapshot = message.data
-			if m.flash == "Refreshing..." {
-				m.flash = "Refreshed."
-			}
-		}
-		return m, nil
-	case snoozeMsg:
-		if message.err != nil {
-			m.flash = message.err.Error()
-		} else {
-			m.snapshot.Status = message.status
-			m.flash = fmt.Sprintf("Snoozed until %s.", message.status.SnoozedUntil)
-		}
-		return m, nil
 	}
 
-	if tabs[m.activeTab].key == "rules" {
-		var cmd tea.Cmd
-		m.ruleInput, cmd = m.ruleInput.Update(msg)
-		return m, cmd
-	}
-
-	return m, nil
+	return m.dispatchTabUpdate(msg)
 }
 
 func (m model) View() string {
-	if m.loading {
+	if m.loading && reflect.DeepEqual(m.persisted, config.Config{}) {
 		return "Loading curfew..."
 	}
 	if m.err != nil {
 		return renderError(m.err)
 	}
 
-	var sections []string
-	sections = append(sections, renderTabs(m.activeTab))
-	sections = append(sections, renderBody(m))
+	body := m.renderBody()
+	sections := []string{
+		renderTabs(m.activeTab, m.dirty),
+		body,
+	}
+
+	if m.validation != nil && isEditableTab(tabs[m.activeTab].key) {
+		sections = append(sections, errorStyle.Render(fmt.Sprintf("Draft validation: %v", m.validation)))
+	}
 	if m.flash != "" {
 		sections = append(sections, flashStyle.Render(m.flash))
 	}
 	if m.helpOpen {
-		sections = append(sections, helpStyle.Render("tab/shift-tab switch tabs, r refresh, q quit, ? toggle help, s snooze on Dashboard"))
+		sections = append(sections, helpStyle.Render(m.helpText()))
 	} else {
 		sections = append(sections, mutedStyle.Render("Press ? for help"))
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
+	if m.modal == nil {
+		return content
+	}
+
+	modal := modalStyle.Width(maxInt(50, m.width-10)).Render(
+		lipgloss.JoinVertical(
+			lipgloss.Left,
+			lipgloss.NewStyle().Bold(true).Render(m.modal.title),
+			"",
+			m.modal.form.View(),
+		),
+	)
+	return lipgloss.JoinVertical(lipgloss.Left, content, "", modal)
 }
 
-func (m model) loadSnapshot() tea.Cmd {
+func (m model) dispatchTabUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch tabs[m.activeTab].key {
+	case "dashboard":
+		return m.dashboardTab.update(msg, m)
+	case "schedule":
+		return m.scheduleTab.update(msg, m)
+	case "rules":
+		return m.rulesTab.update(msg, m)
+	case "override":
+		return m.overrideTab.update(msg, m)
+	case "history":
+		return m.historyTab.update(msg, m)
+	case "stats":
+		return m.statsTab.update(msg, m)
+	default:
+		return m, nil
+	}
+}
+
+func (m model) renderBody() string {
+	body := baseBodyStyle
+	if m.width > 0 {
+		body = body.Width(maxInt(40, m.width-4))
+	}
+
+	var content string
+	switch tabs[m.activeTab].key {
+	case "dashboard":
+		content = m.dashboardTab.view(m)
+	case "schedule":
+		content = m.scheduleTab.view(m)
+	case "rules":
+		content = m.rulesTab.view(m)
+	case "override":
+		content = m.overrideTab.view(m)
+	case "history":
+		content = m.historyTab.view(m)
+	case "stats":
+		content = m.statsTab.view(m)
+	default:
+		content = "Unknown tab."
+	}
+	return body.Render(content)
+}
+
+func (m *model) loadSnapshot(syncDraft bool) tea.Cmd {
+	historyDays := m.historyDays
+	statsDays := m.statsDays
 	return func() tea.Msg {
 		cfg, err := m.app.LoadConfig()
 		if err != nil {
@@ -189,241 +374,70 @@ func (m model) loadSnapshot() tea.Cmd {
 		if err != nil {
 			return snapshotMsg{err: err}
 		}
-		ruleList, err := m.app.Rules()
+		history, err := m.app.History(context.Background(), historyDays)
 		if err != nil {
 			return snapshotMsg{err: err}
 		}
-		history, err := m.app.History(context.Background(), 30)
+		stats, err := m.app.Stats(context.Background(), statsDays)
 		if err != nil {
 			return snapshotMsg{err: err}
 		}
-		stats, err := m.app.Stats(context.Background(), 30)
-		if err != nil {
-			return snapshotMsg{err: err}
-		}
-
 		return snapshotMsg{
-			data: snapshot{
-				Config:  cfg,
-				Status:  status,
-				Rules:   ruleList,
-				History: history,
-				Stats:   stats,
-			},
+			config:    &cfg,
+			runtime:   runtimeSnapshot{Status: status, History: history, Stats: stats},
+			syncDraft: syncDraft,
 		}
 	}
 }
 
-func (m model) snooze() tea.Cmd {
+func (m *model) saveDraft() tea.Cmd {
+	draft := config.Clone(m.draft)
 	return func() tea.Msg {
-		duration, err := time.ParseDuration(m.snapshot.Config.Grace.SnoozeDuration)
-		if err != nil {
-			return snoozeMsg{err: err}
-		}
-		_, _, _, err = m.app.Snooze(context.Background(), duration)
-		if err != nil {
-			return snoozeMsg{err: err}
-		}
-		status, err := m.app.EvaluateStatus()
-		return snoozeMsg{status: status, err: err}
+		return saveMsg{err: m.app.SaveConfig(draft)}
 	}
 }
 
-func renderBody(m model) string {
-	body := baseBodyStyle
-	if m.width > 0 {
-		body = body.Width(maxInt(40, m.width-4))
+func (m *model) syncDraftState() {
+	m.validation = m.draft.Validate()
+	m.dirty = !reflect.DeepEqual(m.draft, m.persisted)
+	m.rulesTab.clamp(m.draft)
+	if !m.dirty {
+		m.confirmQuit = false
 	}
+}
 
+func (m model) helpText() string {
+	line := "tab/shift-tab switch tabs, ctrl+s save, ctrl+r discard draft, r refresh runtime data, q quit"
 	switch tabs[m.activeTab].key {
 	case "dashboard":
-		return body.Render(renderDashboard(m.snapshot.Status, m.snapshot.Rules, m.snapshot.History))
+		return line + ", s snooze, f force-enable, x stop tonight, k skip tonight"
 	case "schedule":
-		return body.Render(renderSchedule(m.snapshot.Config))
+		return line + ", g edit general schedule, e edit selected day override, d clear override"
 	case "rules":
-		return body.Render(renderRules(m.snapshot.Config, m.snapshot.Rules, m.ruleInput.Value()))
+		return line + ", / edit probe, a add rule, e edit, d delete, g edit defaults, J/K reorder"
 	case "override":
-		return body.Render(renderOverride(m.snapshot.Config))
-	case "history":
-		return body.Render(renderHistory(m.snapshot.History))
-	case "stats":
-		return body.Render(renderStats(m.snapshot.Stats))
+		return line + ", p edit preset settings, 1/2/3 edit warning/curfew/hard-stop custom tiers"
+	case "history", "stats":
+		return line + ", 1/2/3 set range to 7/30/90 days, up/down scroll"
 	default:
-		return body.Render("Unknown tab.")
+		return line
 	}
 }
 
-func renderTabs(active int) string {
+func renderTabs(active int, dirty bool) string {
 	rendered := make([]string, 0, len(tabs))
 	for i, tab := range tabs {
+		label := tab.label
+		if dirty && i == active {
+			label += " *"
+		}
 		if i == active {
-			rendered = append(rendered, activeTabStyle.Render(tab.label))
+			rendered = append(rendered, activeTabStyle.Render(label))
 			continue
 		}
-		rendered = append(rendered, inactiveTabStyle.Render(tab.label))
+		rendered = append(rendered, inactiveTabStyle.Render(label))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
-}
-
-func renderDashboard(status app.Status, rules []config.RuleEntry, history []store.HistoryRecord) string {
-	lines := []string{"Status"}
-	lines = append(lines, "------")
-	lines = append(lines, status.Render())
-	lines = append(lines, "")
-	lines = append(lines, fmt.Sprintf("Rules active: %d", len(rules)))
-	lines = append(lines, fmt.Sprintf("Last 7 nights: %s", historySparkline(history, 7)))
-	lines = append(lines, "")
-	lines = append(lines, "Shortcuts: [s] snooze, [r] refresh")
-	return strings.Join(lines, "\n")
-}
-
-func renderSchedule(cfg config.Config) string {
-	lines := []string{"Schedule", "--------"}
-	lines = append(lines, fmt.Sprintf("Timezone: %s", cfg.Schedule.Timezone))
-	lines = append(lines, fmt.Sprintf("Default: bedtime %s -> wake %s", cfg.Schedule.Default.Bedtime, cfg.Schedule.Default.Wake))
-	lines = append(lines, "")
-	lines = append(lines, "Overrides:")
-	if len(cfg.Schedule.Overrides) == 0 {
-		lines = append(lines, "  none")
-	} else {
-		for _, day := range []string{"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"} {
-			if override, ok := cfg.Schedule.Overrides[day]; ok {
-				lines = append(lines, fmt.Sprintf("  %-9s bedtime %s -> wake %s", day, override.Bedtime, override.Wake))
-			}
-		}
-	}
-	lines = append(lines, "")
-	lines = append(lines, "Grace")
-	lines = append(lines, fmt.Sprintf("  warning window: %s", cfg.Grace.WarningWindow))
-	lines = append(lines, fmt.Sprintf("  hard stop: %s", cfg.Grace.HardStopAfter))
-	lines = append(lines, fmt.Sprintf("  snoozes per night: %d", cfg.Grace.SnoozeMaxPerNight))
-	lines = append(lines, fmt.Sprintf("  snooze duration: %s", cfg.Grace.SnoozeDuration))
-	return strings.Join(lines, "\n")
-}
-
-func renderRules(cfg config.Config, rulesList []config.RuleEntry, probe string) string {
-	lines := []string{"Rules", "-----"}
-	lines = append(lines, fmt.Sprintf("Default action: %s", cfg.Rules.DefaultAction))
-	lines = append(lines, fmt.Sprintf("Always allowed: %s", strings.Join(cfg.Allowlist.Always, ", ")))
-	lines = append(lines, "")
-	lines = append(lines, "Try a command:")
-	lines = append(lines, fmt.Sprintf("  %s", probe))
-
-	probe = strings.TrimSpace(probe)
-	if probe != "" {
-		match := rules.Evaluate(cfg, probe)
-		lines = append(lines, fmt.Sprintf("Matched action: %s", match.Action))
-		if match.AllowedByAllowlist {
-			lines = append(lines, fmt.Sprintf("Matched via allowlist on %q", match.CommandWord))
-		} else if match.Matched {
-			lines = append(lines, fmt.Sprintf("Matched rule %q (%s)", match.Pattern, match.Kind))
-		} else {
-			lines = append(lines, "No explicit rule matched.")
-		}
-		lines = append(lines, "")
-	}
-
-	lines = append(lines, "Rules:")
-	for _, rule := range rulesList {
-		lines = append(lines, fmt.Sprintf("  %-6s %s", rule.Action, rule.Pattern))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func renderOverride(cfg config.Config) string {
-	lines := []string{"Override", "--------"}
-	lines = append(lines, fmt.Sprintf("Preset: %s", cfg.Override.Preset))
-	lines = append(lines, fmt.Sprintf("Passphrase: %s", cfg.Override.Passphrase))
-	lines = append(lines, "")
-	lines = append(lines, "Blocked-command preview by tier:")
-	for _, tier := range []schedule.Tier{schedule.TierWarning, schedule.TierCurfew, schedule.TierHardStop} {
-		profile := friction.EffectiveProfile(cfg, "block", tier)
-		lines = append(lines, fmt.Sprintf("  %-9s %s", tier, describeProfile(profile)))
-	}
-	lines = append(lines, "")
-	lines = append(lines, "Warn-rule preview by tier:")
-	for _, tier := range []schedule.Tier{schedule.TierWarning, schedule.TierCurfew, schedule.TierHardStop} {
-		profile := friction.EffectiveProfile(cfg, "warn", tier)
-		lines = append(lines, fmt.Sprintf("  %-9s %s", tier, describeProfile(profile)))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func renderHistory(history []store.HistoryRecord) string {
-	lines := []string{"History", "-------"}
-	if len(history) == 0 {
-		lines = append(lines, "No history yet.")
-		return strings.Join(lines, "\n")
-	}
-	for _, record := range history {
-		lines = append(lines, fmt.Sprintf("%s  %-9s snoozes=%d overrides=%d blocked=%d", record.Date, record.Status, record.SnoozesUsed, record.Overrides, record.BlockedCount))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func renderStats(stats store.Stats) string {
-	lines := []string{"Stats", "-----"}
-	lines = append(lines, fmt.Sprintf("Respected nights: %d", stats.RespectedNights))
-	lines = append(lines, fmt.Sprintf("Snoozed nights: %d", stats.SnoozedNights))
-	lines = append(lines, fmt.Sprintf("Overridden nights: %d", stats.OverriddenNights))
-	lines = append(lines, fmt.Sprintf("Current streak: %d", stats.CurrentStreak))
-	lines = append(lines, fmt.Sprintf("Longest streak: %d", stats.LongestStreak))
-	if stats.MostAttemptedCommand != "" {
-		lines = append(lines, fmt.Sprintf("Most-attempted after-hours command: %s (%d)", stats.MostAttemptedCommand, stats.MostAttemptedCount))
-	}
-	return strings.Join(lines, "\n")
-}
-
-func historySparkline(history []store.HistoryRecord, nights int) string {
-	if len(history) == 0 || nights <= 0 {
-		return "......."
-	}
-	segments := make([]string, 0, nights)
-	for i := 0; i < nights; i++ {
-		if i >= len(history) {
-			segments = append(segments, ".")
-			continue
-		}
-		switch history[i].Status {
-		case "respected":
-			segments = append(segments, "#")
-		case "snoozed":
-			segments = append(segments, "~")
-		default:
-			segments = append(segments, "x")
-		}
-	}
-	return strings.Join(segments, "")
-}
-
-func describeProfile(profile friction.Profile) string {
-	switch profile.Kind {
-	case friction.KindAllow:
-		return "allow"
-	case friction.KindBanner:
-		return "banner only"
-	case friction.KindPrompt:
-		return "prompt"
-	case friction.KindWait:
-		return fmt.Sprintf("wait %ds", profile.WaitSeconds)
-	case friction.KindPassphrase:
-		return "passphrase"
-	case friction.KindMath:
-		return fmt.Sprintf("math (%s)", profile.MathDifficulty)
-	case friction.KindCombined:
-		if profile.Passphrase != "" {
-			return fmt.Sprintf("wait %ds + passphrase", profile.WaitSeconds)
-		}
-		return fmt.Sprintf("wait %ds + math", profile.WaitSeconds)
-	case friction.KindBlock:
-		return "block"
-	default:
-		return string(profile.Kind)
-	}
-}
-
-func renderError(err error) string {
-	return errorStyle.Render(fmt.Sprintf("curfew\n\n%s\n\nPress q to quit.", err))
 }
 
 func tabIndex(key string) int {
@@ -437,6 +451,15 @@ func tabIndex(key string) int {
 		}
 	}
 	return 0
+}
+
+func isEditableTab(key string) bool {
+	switch key {
+	case "schedule", "rules", "override":
+		return true
+	default:
+		return false
+	}
 }
 
 func maxInt(left int, right int) int {
@@ -459,6 +482,10 @@ var (
 	baseBodyStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("24")).
+			Padding(1, 2)
+	modalStyle = lipgloss.NewStyle().
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(lipgloss.Color("69")).
 			Padding(1, 2)
 	flashStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("194"))

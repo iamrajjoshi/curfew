@@ -39,6 +39,17 @@ type IO struct {
 	Sleep func(time.Duration)
 }
 
+type Challenge struct {
+	Kind        Kind
+	Reason      string
+	WaitSeconds int
+	Prompt      string
+	Help        string
+
+	passphrase string
+	answer     string
+}
+
 func EffectiveProfile(cfg config.Config, ruleAction string, tier schedule.Tier) Profile {
 	if tier == schedule.TierNormal || ruleAction == "allow" {
 		return Profile{Kind: KindAllow}
@@ -55,6 +66,76 @@ func EffectiveProfile(cfg config.Config, ruleAction string, tier schedule.Tier) 
 	}
 }
 
+func NewChallenge(profile Profile, reason string) Challenge {
+	challenge := Challenge{
+		Kind:        profile.Kind,
+		Reason:      reason,
+		WaitSeconds: max(profile.WaitSeconds, 1),
+	}
+
+	switch profile.Kind {
+	case KindPrompt:
+		challenge.Prompt = "Proceed anyway? [y/N]"
+	case KindPassphrase:
+		challenge.Prompt = "Type the passphrase to continue"
+		challenge.Help = strings.TrimSpace(profile.Passphrase)
+		challenge.passphrase = strings.TrimSpace(profile.Passphrase)
+	case KindMath:
+		problem, answer := generateProblem(profile.MathDifficulty)
+		challenge.Prompt = "Solve this to continue"
+		challenge.Help = fmt.Sprintf("%s =", problem)
+		challenge.answer = strconv.Itoa(answer)
+	case KindCombined:
+		challenge.Kind = KindCombined
+		if strings.TrimSpace(profile.Passphrase) != "" {
+			challenge.Prompt = "Type the passphrase to continue"
+			challenge.Help = strings.TrimSpace(profile.Passphrase)
+			challenge.passphrase = strings.TrimSpace(profile.Passphrase)
+			break
+		}
+		problem, answer := generateProblem(profile.MathDifficulty)
+		challenge.Prompt = "Solve this to continue"
+		challenge.Help = fmt.Sprintf("%s =", problem)
+		challenge.answer = strconv.Itoa(answer)
+	}
+
+	return challenge
+}
+
+func (c Challenge) RequiresInput() bool {
+	switch c.Kind {
+	case KindPrompt, KindPassphrase, KindMath, KindCombined:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c Challenge) Check(input string) (bool, string) {
+	switch c.Kind {
+	case KindAllow, KindBanner:
+		return true, "allowed"
+	case KindPrompt:
+		ok := isYes(input)
+		return ok, ternary(ok, "overridden", "blocked")
+	case KindWait:
+		return true, "overridden"
+	case KindPassphrase, KindCombined:
+		if c.passphrase != "" {
+			ok := strings.TrimSpace(input) == c.passphrase
+			return ok, ternary(ok, "overridden", "blocked")
+		}
+		fallthrough
+	case KindMath:
+		ok := strings.TrimSpace(input) == c.answer
+		return ok, ternary(ok, "overridden", "blocked")
+	case KindBlock:
+		return false, "blocked"
+	default:
+		return false, "blocked"
+	}
+}
+
 func Run(profile Profile, ioState IO, reason string) (bool, string, error) {
 	if ioState.In == nil {
 		ioState.In = strings.NewReader("")
@@ -66,63 +147,61 @@ func Run(profile Profile, ioState IO, reason string) (bool, string, error) {
 		ioState.Sleep = time.Sleep
 	}
 
-	switch profile.Kind {
+	challenge := NewChallenge(profile, reason)
+
+	switch challenge.Kind {
 	case KindAllow:
 		return true, "allowed", nil
 	case KindBanner:
 		fmt.Fprintf(ioState.Out, "%s\n", reason)
 		return true, "allowed", nil
 	case KindPrompt:
-		fmt.Fprintf(ioState.Out, "%s\nProceed anyway? [y/N]: ", reason)
+		fmt.Fprintf(ioState.Out, "%s\n%s: ", challenge.Reason, challenge.Prompt)
 		answer, err := readLine(ioState.In)
 		if err != nil {
 			return false, "blocked", err
 		}
-		return isYes(answer), ternary(isYes(answer), "overridden", "blocked"), nil
+		allowed, outcome := challenge.Check(answer)
+		return allowed, outcome, nil
 	case KindWait:
-		wait := max(profile.WaitSeconds, 1)
-		fmt.Fprintf(ioState.Out, "%s\nWaiting %ds. Press Ctrl-C if this was accidental.\n", reason, wait)
-		ioState.Sleep(time.Duration(wait) * time.Second)
+		fmt.Fprintf(ioState.Out, "%s\nWaiting %ds. Press Ctrl-C if this was accidental.\n", challenge.Reason, challenge.WaitSeconds)
+		ioState.Sleep(time.Duration(challenge.WaitSeconds) * time.Second)
 		return true, "overridden", nil
 	case KindPassphrase:
-		fmt.Fprintf(ioState.Out, "%s\nType the passphrase to continue:\n> ", reason)
+		fmt.Fprintf(ioState.Out, "%s\n%s:\n> ", challenge.Reason, challenge.Prompt)
 		answer, err := readLine(ioState.In)
 		if err != nil {
 			return false, "blocked", err
 		}
-		ok := strings.TrimSpace(answer) == strings.TrimSpace(profile.Passphrase)
-		return ok, ternary(ok, "overridden", "blocked"), nil
+		allowed, outcome := challenge.Check(answer)
+		return allowed, outcome, nil
 	case KindMath:
-		problem, answer := generateProblem(profile.MathDifficulty)
-		fmt.Fprintf(ioState.Out, "%s\nSolve this to continue: %s = ", reason, problem)
+		fmt.Fprintf(ioState.Out, "%s\n%s: %s ", challenge.Reason, challenge.Prompt, challenge.Help)
 		raw, err := readLine(ioState.In)
 		if err != nil {
 			return false, "blocked", err
 		}
-		value, err := strconv.Atoi(strings.TrimSpace(raw))
-		if err != nil {
-			return false, "blocked", nil
-		}
-		ok := value == answer
-		return ok, ternary(ok, "overridden", "blocked"), nil
+		allowed, outcome := challenge.Check(raw)
+		return allowed, outcome, nil
 	case KindCombined:
-		wait := max(profile.WaitSeconds, 1)
-		fmt.Fprintf(ioState.Out, "%s\nWaiting %ds before the override prompt.\n", reason, wait)
-		ioState.Sleep(time.Duration(wait) * time.Second)
-		next := Profile{
-			Kind:           KindPassphrase,
-			Passphrase:     profile.Passphrase,
-			MathDifficulty: profile.MathDifficulty,
+		fmt.Fprintf(ioState.Out, "%s\nWaiting %ds before the override prompt.\n", challenge.Reason, challenge.WaitSeconds)
+		ioState.Sleep(time.Duration(challenge.WaitSeconds) * time.Second)
+		if challenge.passphrase != "" {
+			fmt.Fprintf(ioState.Out, "Override still requested.\n%s:\n> ", challenge.Prompt)
+		} else {
+			fmt.Fprintf(ioState.Out, "Override still requested.\n%s: %s ", challenge.Prompt, challenge.Help)
 		}
-		if strings.TrimSpace(next.Passphrase) == "" {
-			next.Kind = KindMath
+		raw, err := readLine(ioState.In)
+		if err != nil {
+			return false, "blocked", err
 		}
-		return Run(next, ioState, "Override still requested.")
+		allowed, outcome := challenge.Check(raw)
+		return allowed, outcome, nil
 	case KindBlock:
-		fmt.Fprintf(ioState.Out, "%s\n", reason)
+		fmt.Fprintf(ioState.Out, "%s\n", challenge.Reason)
 		return false, "blocked", nil
 	default:
-		return false, "blocked", fmt.Errorf("unknown friction profile %q", profile.Kind)
+		return false, "blocked", fmt.Errorf("unknown friction profile %q", challenge.Kind)
 	}
 }
 

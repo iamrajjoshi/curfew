@@ -187,6 +187,14 @@ func Exists(path string) bool {
 	return err == nil
 }
 
+func Clone(cfg Config) Config {
+	copy := cfg
+	copy.Schedule.Overrides = cloneOverrides(cfg.Schedule.Overrides)
+	copy.Rules.Rule = append([]RuleEntry(nil), cfg.Rules.Rule...)
+	copy.Allowlist.Always = append([]string(nil), cfg.Allowlist.Always...)
+	return copy
+}
+
 func (c Config) Validate() error {
 	if err := c.Schedule.Validate(); err != nil {
 		return err
@@ -327,4 +335,15 @@ func parseClock(value string) (time.Duration, error) {
 
 func WeekdayKey(day time.Weekday) string {
 	return weekdays[day]
+}
+
+func cloneOverrides(input map[string]DaySchedule) map[string]DaySchedule {
+	if len(input) == 0 {
+		return nil
+	}
+	output := make(map[string]DaySchedule, len(input))
+	for day, schedule := range input {
+		output[day] = schedule
+	}
+	return output
 }
