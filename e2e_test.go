@@ -2,13 +2,17 @@ package main_test
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/creack/pty"
 	"github.com/rajjoshi/curfew/internal/config"
 )
 
@@ -180,6 +184,24 @@ func TestCLIEndToEndStopCountsAsOverride(t *testing.T) {
 	}
 }
 
+func TestCLIInteractiveTUIEntrypoints(t *testing.T) {
+	t.Parallel()
+
+	env := newCLIEnv(t)
+
+	rootSession := startCurfewPTY(t, env)
+	waitForPTYText(t, rootSession, "Rules active: 8")
+	stopCurfewPTY(t, rootSession, "q")
+
+	configSession := startCurfewPTY(t, env, "config")
+	waitForPTYText(t, configSession, "Default: bedtime 23:00 -> wake 07:00")
+	stopCurfewPTY(t, configSession, "q")
+
+	rulesSession := startCurfewPTY(t, env, "rules")
+	waitForPTYText(t, rulesSession, "Default action: allow")
+	stopCurfewPTY(t, rulesSession, "q")
+}
+
 func newCLIEnv(t *testing.T) map[string]string {
 	t.Helper()
 
@@ -210,6 +232,12 @@ type cliResult struct {
 	stdout   string
 	stderr   string
 	exitCode int
+}
+
+type ptySession struct {
+	ptmx   *os.File
+	output bytes.Buffer
+	done   chan error
 }
 
 func runCurfew(t *testing.T, env map[string]string, stdin string, args ...string) cliResult {
@@ -244,6 +272,72 @@ func runCurfew(t *testing.T, env map[string]string, stdin string, args ...string
 	}
 	result.exitCode = exitErr.ExitCode()
 	return result
+}
+
+func startCurfewPTY(t *testing.T, env map[string]string, args ...string) *ptySession {
+	t.Helper()
+
+	command := exec.Command(mustBuildBinary(t), args...)
+	command.Dir = repoRoot(t)
+
+	environment := os.Environ()
+	for key, value := range env {
+		environment = append(environment, key+"="+value)
+	}
+	command.Env = environment
+
+	ptmx, err := pty.Start(command)
+	if err != nil {
+		t.Fatalf("start pty: %v", err)
+	}
+
+	session := &ptySession{
+		ptmx: ptmx,
+		done: make(chan error, 1),
+	}
+
+	go func() {
+		_, _ = io.Copy(&session.output, ptmx)
+		session.done <- command.Wait()
+	}()
+
+	return session
+}
+
+func waitForPTYText(t *testing.T, session *ptySession, want string) string {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		clean := stripANSI(session.output.String())
+		if strings.Contains(clean, want) {
+			return clean
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %q in PTY output:\n%s", want, stripANSI(session.output.String()))
+	return ""
+}
+
+func stopCurfewPTY(t *testing.T, session *ptySession, input string) {
+	t.Helper()
+
+	if _, err := session.ptmx.Write([]byte(input)); err != nil {
+		t.Fatalf("write pty input: %v", err)
+	}
+	select {
+	case err := <-session.done:
+		_ = session.ptmx.Close()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 0 {
+				return
+			}
+			t.Fatalf("wait pty command: %v\noutput:\n%s", err, stripANSI(session.output.String()))
+		}
+	case <-time.After(5 * time.Second):
+		_ = session.ptmx.Close()
+		t.Fatalf("timed out waiting for PTY command to exit\noutput:\n%s", stripANSI(session.output.String()))
+	}
 }
 
 func mustBuildBinary(t *testing.T) string {
@@ -287,4 +381,12 @@ type buildFailure struct {
 
 func (b *buildFailure) Error() string {
 	return b.err.Error() + "\n" + b.output
+}
+
+var ansiPattern = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\a]*(?:\a|\x1b\\))`)
+
+func stripANSI(value string) string {
+	clean := ansiPattern.ReplaceAllString(value, "")
+	clean = strings.ReplaceAll(clean, "\r", "")
+	return clean
 }
