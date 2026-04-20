@@ -155,19 +155,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.err = nil
+		wasDirty := m.dirty
+		previousPersisted := m.persisted
 		if message.config != nil {
 			m.persisted = config.Clone(*message.config)
 			if message.syncDraft {
 				m.draft = config.Clone(*message.config)
-				m.syncDraftState()
 				m.confirmQuit = false
 			}
+			m.syncDraftState()
 		}
 		m.runtime = message.runtime
 		m.rulesTab.clamp(m.draft)
 		m.historyTab.clamp(m.runtime.History)
 		m.statsTab.clamp()
-		if m.flash == "Refreshing..." {
+		configChanged := !reflect.DeepEqual(previousPersisted, m.persisted)
+		if !message.syncDraft && configChanged && !wasDirty && m.dirty {
+			m.flash = "Config changed on disk. Press ctrl+r to reload it or ctrl+s to overwrite."
+		} else if m.flash == "Refreshing..." {
 			m.flash = "Refreshed."
 		}
 		return m, nil
@@ -193,6 +198,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			return m, m.loadSnapshot(false)
 		}
+		return m, nil
+	case disablePromptMsg:
+		m.flash = "Override still requested."
+		m.openDisableModal(message.title, message.request, message.skipped, message.challenge)
 		return m, nil
 	case modalSubmittedMsg:
 		if m.modal == nil {

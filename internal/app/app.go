@@ -306,26 +306,11 @@ func (a *App) SkipTonight(ctx context.Context, reason string, in io.Reader, out 
 	return a.disableSession(ctx, true, reason, in, out)
 }
 
-func (a *App) StopTonightApproved(ctx context.Context) (schedule.Session, error) {
-	request, err := a.DisableRequest(false, "Disable curfew for the rest of this session?")
-	if err != nil {
-		return schedule.Session{}, err
-	}
-	if request.Tier == schedule.TierHardStop {
+func (a *App) ApplyDisableRequest(ctx context.Context, request DisableRequest, skipped bool, outcome string) (schedule.Session, error) {
+	if request.Tier == schedule.TierHardStop || request.Profile.Kind == friction.KindBlock {
 		return schedule.Session{}, errors.New("curfew cannot be disabled during hard stop")
 	}
-	return a.applyDisabledSession(ctx, request.Target, request.Tier, false, "overridden")
-}
-
-func (a *App) SkipTonightApproved(ctx context.Context) (schedule.Session, error) {
-	request, err := a.DisableRequest(true, "Skip tonight's curfew?")
-	if err != nil {
-		return schedule.Session{}, err
-	}
-	if request.Tier == schedule.TierHardStop {
-		return schedule.Session{}, errors.New("curfew cannot be disabled during hard stop")
-	}
-	return a.applyDisabledSession(ctx, request.Target, request.Tier, true, "overridden")
+	return a.applyDisabledSession(ctx, request.Target, request.Tier, skipped, outcome)
 }
 
 func (a *App) Snooze(ctx context.Context, duration time.Duration) (schedule.Session, time.Time, int, error) {
@@ -457,7 +442,7 @@ func (a *App) disableSession(ctx context.Context, skipped bool, reason string, i
 		}
 		return schedule.Session{}, errors.New("override cancelled")
 	}
-	return a.applyDisabledSession(ctx, request.Target, request.Tier, skipped, outcome)
+	return a.ApplyDisableRequest(ctx, request, skipped, outcome)
 }
 
 func (a *App) DisableRequest(skipped bool, reason string) (DisableRequest, error) {

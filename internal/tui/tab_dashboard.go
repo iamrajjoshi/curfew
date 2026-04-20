@@ -9,9 +9,17 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
+	"github.com/rajjoshi/curfew/internal/app"
 	"github.com/rajjoshi/curfew/internal/friction"
 	"github.com/rajjoshi/curfew/internal/schedule"
 )
+
+type disablePromptMsg struct {
+	title     string
+	request   app.DisableRequest
+	challenge friction.Challenge
+	skipped   bool
+}
 
 func (t dashboardTab) update(msg tea.Msg, m model) (tea.Model, tea.Cmd) {
 	keyMsg, ok := msg.(tea.KeyMsg)
@@ -76,8 +84,10 @@ func (m model) forceEnableCmd() tea.Cmd {
 
 func (m *model) beginDisableModal(skipped bool) tea.Cmd {
 	reason := "Disable curfew for the rest of this session?"
+	title := "Stop Tonight"
 	if skipped {
 		reason = "Skip tonight's curfew?"
+		title = "Skip Tonight"
 	}
 	request, err := m.app.DisableRequest(skipped, reason)
 	if err != nil {
@@ -90,44 +100,69 @@ func (m *model) beginDisableModal(skipped bool) tea.Cmd {
 	}
 
 	challenge := friction.NewChallenge(request.Profile, request.Reason)
+
+	switch challenge.Kind {
+	case friction.KindWait:
+		m.flash = fmt.Sprintf("Waiting %ds before applying override...", challenge.WaitSeconds)
+		return m.disableWaitApplyCmd(request, skipped, challenge.WaitSeconds)
+	case friction.KindCombined:
+		m.flash = fmt.Sprintf("Waiting %ds before the override prompt...", challenge.WaitSeconds)
+		return m.disableWaitPromptCmd(title, request, skipped, challenge)
+	default:
+		m.openDisableModal(title, request, skipped, challenge)
+		return nil
+	}
+}
+
+func (m *model) openDisableModal(title string, request app.DisableRequest, skipped bool, challenge friction.Challenge) {
 	answer := ""
 	form := huhFormForChallenge(challenge, &answer)
 	m.modal = &modalState{
-		title: "Stop Tonight",
+		title: title,
 		form:  form,
 		apply: func(next *model) (bool, tea.Cmd) {
-			allowed, _ := challenge.Check(answer)
+			allowed, outcome := challenge.Check(answer)
 			if !allowed {
 				next.flash = "Override cancelled."
 				return true, nil
 			}
-			if challenge.WaitSeconds > 0 {
-				next.flash = fmt.Sprintf("Waiting %ds before applying override...", challenge.WaitSeconds)
-			}
-			return true, next.disableApprovedCmd(skipped, challenge.WaitSeconds)
+			return true, next.disableApprovedCmd(request, skipped, outcome)
 		},
 	}
-	if skipped {
-		m.modal.title = "Skip Tonight"
-	}
 	m.modal.form.WithWidth(maxInt(40, m.width-12))
-	return nil
 }
 
-func (m model) disableApprovedCmd(skipped bool, waitSeconds int) tea.Cmd {
+func (m model) disableWaitApplyCmd(request app.DisableRequest, skipped bool, waitSeconds int) tea.Cmd {
 	return func() tea.Msg {
-		if waitSeconds > 0 {
-			time.Sleep(time.Duration(waitSeconds) * time.Second)
+		time.Sleep(time.Duration(waitSeconds) * time.Second)
+		session, err := m.app.ApplyDisableRequest(context.Background(), request, skipped, "overridden")
+		if err != nil {
+			return actionMsg{err: err}
 		}
-		var (
-			session schedule.Session
-			err     error
-		)
-		if skipped {
-			session, err = m.app.SkipTonightApproved(context.Background())
-		} else {
-			session, err = m.app.StopTonightApproved(context.Background())
+		return actionMsg{
+			flash:  fmt.Sprintf("Updated curfew session %s.", session.Date),
+			reload: true,
 		}
+	}
+}
+
+func (m model) disableWaitPromptCmd(title string, request app.DisableRequest, skipped bool, challenge friction.Challenge) tea.Cmd {
+	postWait := challenge
+	postWait.WaitSeconds = 0
+	return func() tea.Msg {
+		time.Sleep(time.Duration(challenge.WaitSeconds) * time.Second)
+		return disablePromptMsg{
+			title:     title,
+			request:   request,
+			challenge: postWait,
+			skipped:   skipped,
+		}
+	}
+}
+
+func (m model) disableApprovedCmd(request app.DisableRequest, skipped bool, outcome string) tea.Cmd {
+	return func() tea.Msg {
+		session, err := m.app.ApplyDisableRequest(context.Background(), request, skipped, outcome)
 		if err != nil {
 			return actionMsg{err: err}
 		}

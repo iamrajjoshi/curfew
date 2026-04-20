@@ -92,6 +92,36 @@ func TestModelRefreshKeepsDirtyDraft(t *testing.T) {
 	}
 }
 
+func TestModelRefreshMarksDraftDirtyWhenConfigChangesOnDisk(t *testing.T) {
+	t.Parallel()
+
+	current := loadedTestModel(t)
+
+	cfg, err := current.app.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cfg.Schedule.Default.Bedtime = "22:15"
+	if err := config.Save(current.app.Paths.ConfigFile(), cfg); err != nil {
+		t.Fatalf("save updated config: %v", err)
+	}
+
+	current = runKeyMsg(t, current, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+
+	if current.persisted.Schedule.Default.Bedtime != "22:15" {
+		t.Fatalf("persisted bedtime after refresh = %q, want 22:15", current.persisted.Schedule.Default.Bedtime)
+	}
+	if current.draft.Schedule.Default.Bedtime != "23:00" {
+		t.Fatalf("draft bedtime after external change = %q, want 23:00", current.draft.Schedule.Default.Bedtime)
+	}
+	if !current.dirty {
+		t.Fatal("expected external config change to mark the draft dirty")
+	}
+	if !strings.Contains(current.flash, "Config changed on disk") {
+		t.Fatalf("expected external change warning, got %q", current.flash)
+	}
+}
+
 func TestRulesPreviewUsesDraftConfig(t *testing.T) {
 	t.Parallel()
 
@@ -104,6 +134,50 @@ func TestRulesPreviewUsesDraftConfig(t *testing.T) {
 	output := current.rulesTab.view(current)
 	if !strings.Contains(output, `Matched rule "terraform plan*"`) {
 		t.Fatalf("expected draft preview to use unsaved rules, got:\n%s", output)
+	}
+}
+
+func TestDashboardCombinedWaitOpensPromptAfterDelay(t *testing.T) {
+	t.Parallel()
+
+	current := loadedTestModel(t)
+	cfg, err := current.app.LoadConfig()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cfg.Override.Preset = "custom"
+	cfg.Override.WaitSeconds = 1
+	cfg.Override.Custom.Curfew = config.OverrideTier{
+		Method:      "combined",
+		Passphrase:  "i am choosing to break my own rule",
+		WaitSeconds: 1,
+	}
+	if err := current.app.SaveConfig(cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	current = drainCmd(t, current, current.loadSnapshot(true))
+
+	cmd := current.beginDisableModal(false)
+	if cmd == nil {
+		t.Fatal("expected combined override to start with a wait command")
+	}
+	if current.modal != nil {
+		t.Fatal("expected no prompt modal before the wait finishes")
+	}
+	if !strings.Contains(current.flash, "before the override prompt") {
+		t.Fatalf("expected wait flash, got %q", current.flash)
+	}
+
+	message := cmd()
+	prompt, ok := message.(disablePromptMsg)
+	if !ok {
+		t.Fatalf("expected disablePromptMsg after wait, got %T", message)
+	}
+	if prompt.title != "Stop Tonight" {
+		t.Fatalf("prompt title = %q, want Stop Tonight", prompt.title)
+	}
+	if prompt.challenge.WaitSeconds != 0 {
+		t.Fatalf("post-wait prompt should not keep a wait, got %d", prompt.challenge.WaitSeconds)
 	}
 }
 

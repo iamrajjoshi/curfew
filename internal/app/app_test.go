@@ -196,6 +196,42 @@ func TestHardStopPreventsStopOverride(t *testing.T) {
 	}
 }
 
+func TestApplyDisableRequestUsesOriginalTarget(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	now := time.Date(2026, 4, 22, 23, 30, 0, 0, location)
+	application, clock := newTestApp(t, now)
+
+	request, err := application.DisableRequest(false, "Disable curfew for the rest of this session?")
+	if err != nil {
+		t.Fatalf("build disable request: %v", err)
+	}
+	if request.Target.Date != "2026-04-22" {
+		t.Fatalf("request target date = %q, want 2026-04-22", request.Target.Date)
+	}
+
+	clock.now = time.Date(2026, 4, 23, 7, 30, 0, 0, location)
+	session, err := application.ApplyDisableRequest(context.Background(), request, false, "overridden")
+	if err != nil {
+		t.Fatalf("apply disable request: %v", err)
+	}
+	if session.Date != "2026-04-22" {
+		t.Fatalf("applied session date = %q, want 2026-04-22", session.Date)
+	}
+
+	history, err := application.History(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("history after apply: %v", err)
+	}
+	if record := findHistoryRecord(t, history, "2026-04-22"); record.Status != "overrode" {
+		t.Fatalf("expected original session to register as overrode, got %+v", record)
+	}
+}
+
 func TestQuietCompletedSessionsAppearInHistoryAndStats(t *testing.T) {
 	t.Parallel()
 

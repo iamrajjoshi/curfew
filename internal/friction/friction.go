@@ -68,9 +68,13 @@ func EffectiveProfile(cfg config.Config, ruleAction string, tier schedule.Tier) 
 
 func NewChallenge(profile Profile, reason string) Challenge {
 	challenge := Challenge{
-		Kind:        profile.Kind,
-		Reason:      reason,
-		WaitSeconds: max(profile.WaitSeconds, 1),
+		Kind:   profile.Kind,
+		Reason: reason,
+	}
+
+	switch profile.Kind {
+	case KindWait, KindCombined:
+		challenge.WaitSeconds = max(profile.WaitSeconds, 1)
 	}
 
 	switch profile.Kind {
