@@ -21,6 +21,7 @@ archives:
 
 brews:
   - name: curfew
+    directory: Formula
     repository:
       owner: iamrajjoshi
       name: homebrew-tap
