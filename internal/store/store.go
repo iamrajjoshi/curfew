@@ -79,7 +79,7 @@ type Store interface {
 	RecordEvent(context.Context, Event) error
 	UpsertSession(context.Context, SessionRecord) error
 	History(context.Context, string) ([]HistoryRecord, error)
-	SessionDetails(context.Context, string) (SessionDetails, error)
+	SessionDetails(context.Context, string, *time.Location) (SessionDetails, error)
 	TopCommands(context.Context, string, int) ([]CommandStat, error)
 	Stats(context.Context, string) (Stats, error)
 	Purge(context.Context, string) error

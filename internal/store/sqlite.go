@@ -166,7 +166,7 @@ func (s *SQLite) History(ctx context.Context, startDate string) ([]HistoryRecord
 	return history, rows.Err()
 }
 
-func (s *SQLite) SessionDetails(ctx context.Context, date string) (SessionDetails, error) {
+func (s *SQLite) SessionDetails(ctx context.Context, date string, location *time.Location) (SessionDetails, error) {
 	row := s.db.QueryRowContext(
 		ctx,
 		`WITH event_rollup AS (
@@ -247,7 +247,10 @@ func (s *SQLite) SessionDetails(ctx context.Context, date string) (SessionDetail
 		if err := rows.Scan(&event.SessionDate, &timestamp, &event.Command, &matchedRule, &event.Action, &event.Outcome, &tier, &shell); err != nil {
 			return SessionDetails{}, err
 		}
-		event.Timestamp = time.Unix(timestamp, 0).UTC()
+		if location == nil {
+			location = time.UTC
+		}
+		event.Timestamp = time.Unix(timestamp, 0).In(location)
 		event.MatchedRule = matchedRule.String
 		event.Tier = tier.String
 		event.Shell = shell.String

@@ -67,7 +67,7 @@ func TestSQLiteUsesExplicitDateWindows(t *testing.T) {
 		t.Fatalf("top commands = %+v, want claude", stats.TopCommands)
 	}
 
-	details, err := sqliteStore.SessionDetails(context.Background(), "2026-04-20")
+	details, err := sqliteStore.SessionDetails(context.Background(), "2026-04-20", time.UTC)
 	if err != nil {
 		t.Fatalf("session details: %v", err)
 	}
@@ -87,6 +87,52 @@ func TestSQLiteUsesExplicitDateWindows(t *testing.T) {
 	}
 	if len(history) != 1 || history[0].Date != "2026-04-20" {
 		t.Fatalf("history after purge = %+v, want only 2026-04-20", history)
+	}
+}
+
+func TestSQLiteSessionDetailsUseRequestedLocation(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore, err := Open(filepath.Join(t.TempDir(), "history.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = sqliteStore.Close()
+	})
+
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	eventTime := time.Date(2026, 4, 23, 23, 30, 0, 0, location)
+	if err := sqliteStore.UpsertSession(context.Background(), SessionRecord{
+		Date:              "2026-04-23",
+		BedtimeConfigured: "23:00",
+		WakeConfigured:    "07:00",
+		LastCommandAt:     &eventTime,
+	}); err != nil {
+		t.Fatalf("upsert session: %v", err)
+	}
+	if err := sqliteStore.RecordEvent(context.Background(), Event{
+		SessionDate: "2026-04-23",
+		Timestamp:   eventTime,
+		Command:     "claude",
+		Action:      "block",
+		Outcome:     "blocked",
+	}); err != nil {
+		t.Fatalf("record event: %v", err)
+	}
+
+	details, err := sqliteStore.SessionDetails(context.Background(), "2026-04-23", location)
+	if err != nil {
+		t.Fatalf("session details: %v", err)
+	}
+	if len(details.Events) != 1 {
+		t.Fatalf("event count = %d, want 1", len(details.Events))
+	}
+	if got := details.Events[0].Timestamp.Format(time.RFC3339); got != "2026-04-23T23:30:00-07:00" {
+		t.Fatalf("event timestamp = %q, want local curfew time", got)
 	}
 }
 

@@ -82,11 +82,18 @@ func New() (*App, error) {
 		currentStore = sqliteStore
 	}
 
+	nowFn := time.Now
+	if override := strings.TrimSpace(os.Getenv("CURFEW_TEST_NOW")); override != "" {
+		if parsed, err := time.Parse(time.RFC3339, override); err == nil {
+			nowFn = func() time.Time { return parsed }
+		}
+	}
+
 	return &App{
 		Paths:   layout,
 		Runtime: runtime.New(layout.RuntimeFile(), layout.RuntimeLockFile()),
 		Store:   currentStore,
-		Now:     time.Now,
+		Now:     nowFn,
 	}, nil
 }
 
@@ -376,11 +383,22 @@ func (a *App) HistoryDetails(ctx context.Context, date string) (store.SessionDet
 	if err != nil {
 		return store.SessionDetails{}, err
 	}
+	location, err := schedule.ResolveLocation(cfg.Schedule.Timezone)
+	if err != nil {
+		return store.SessionDetails{}, err
+	}
+	details, err := a.Store.SessionDetails(ctx, date, location)
+	if err != nil {
+		return store.SessionDetails{}, err
+	}
+	if details.Found {
+		return details, nil
+	}
 	now := a.Now()
 	if err := a.materializeSessionDate(ctx, cfg, now, date); err != nil {
 		return store.SessionDetails{}, err
 	}
-	return a.Store.SessionDetails(ctx, date)
+	return a.Store.SessionDetails(ctx, date, location)
 }
 
 func (a *App) Stats(ctx context.Context, days int) (store.Stats, error) {
@@ -585,8 +603,9 @@ func (a *App) materializeCompletedSessions(ctx context.Context, cfg config.Confi
 		return err
 	}
 	now = now.In(location)
-	for offset := 0; offset <= max(days, 1); offset++ {
-		date := time.Date(now.Year(), now.Month(), now.Day()-offset, 0, 0, 0, 0, location)
+	anchor := analyticsAnchorDate(cfg, now)
+	for offset := 0; offset < normalizedWindowDays(days); offset++ {
+		date := anchor.AddDate(0, 0, -offset)
 		session, err := schedule.SessionForDate(date, cfg, location)
 		if err != nil {
 			return err
@@ -614,6 +633,13 @@ func (a *App) materializeSessionDate(ctx context.Context, cfg config.Config, now
 	if err != nil {
 		return err
 	}
+	floorDate := maxDateString(
+		retentionStartDate(cfg, now, cfg.Logging.RetainDays),
+		a.installFloorDate(location),
+	)
+	if sessionDate.Format("2006-01-02") < floorDate {
+		return nil
+	}
 	session, err := schedule.SessionForDate(sessionDate, cfg, location)
 	if err != nil {
 		return err
@@ -629,25 +655,49 @@ func (a *App) materializeSessionDate(ctx context.Context, cfg config.Config, now
 }
 
 func historyStartDate(cfg config.Config, now time.Time, days int) string {
-	location, err := schedule.ResolveLocation(cfg.Schedule.Timezone)
-	if err != nil {
-		return now.Format("2006-01-02")
-	}
-	if days < 0 {
-		days = 0
-	}
-	return now.In(location).AddDate(0, 0, -days).Format("2006-01-02")
+	return analyticsAnchorDate(cfg, now).AddDate(0, 0, -(normalizedWindowDays(days) - 1)).Format("2006-01-02")
 }
 
 func retentionStartDate(cfg config.Config, now time.Time, retainDays int) string {
+	return analyticsAnchorDate(cfg, now).AddDate(0, 0, -(normalizedWindowDays(retainDays) - 1)).Format("2006-01-02")
+}
+
+func normalizedWindowDays(days int) int {
+	if days < 1 {
+		return 1
+	}
+	return days
+}
+
+func maxDateString(left string, right string) string {
+	if left >= right {
+		return left
+	}
+	return right
+}
+
+func (a *App) installFloorDate(location *time.Location) string {
+	info, err := os.Stat(a.Paths.ConfigFile())
+	if err != nil {
+		return ""
+	}
+	return info.ModTime().In(location).Format("2006-01-02")
+}
+
+func analyticsAnchorDate(cfg config.Config, now time.Time) time.Time {
 	location, err := schedule.ResolveLocation(cfg.Schedule.Timezone)
 	if err != nil {
-		return now.Format("2006-01-02")
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	}
-	if retainDays < 0 {
-		retainDays = 0
+	now = now.In(location)
+
+	eval, err := schedule.Evaluate(now, cfg)
+	if err == nil && eval.Current != nil {
+		if sessionDate, parseErr := time.ParseInLocation("2006-01-02", eval.Current.Date, location); parseErr == nil {
+			return sessionDate
+		}
 	}
-	return now.In(location).AddDate(0, 0, -retainDays).Format("2006-01-02")
+	return time.Date(now.Year(), now.Month(), now.Day()-1, 0, 0, 0, 0, location)
 }
 
 func max(left int, right int) int {

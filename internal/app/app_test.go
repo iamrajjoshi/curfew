@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -255,6 +256,9 @@ func TestQuietCompletedSessionsAppearInHistoryAndStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
+	if len(history) != 2 {
+		t.Fatalf("history len = %d, want 2", len(history))
+	}
 	if record := findHistoryRecord(t, history, "2026-04-20"); record.Status != "respected" {
 		t.Fatalf("expected 2026-04-20 to be respected, got %+v", record)
 	}
@@ -265,6 +269,9 @@ func TestQuietCompletedSessionsAppearInHistoryAndStats(t *testing.T) {
 	stats, err := application.Stats(context.Background(), 2)
 	if err != nil {
 		t.Fatalf("stats: %v", err)
+	}
+	if stats.TotalNights != 2 {
+		t.Fatalf("total nights = %d, want 2", stats.TotalNights)
 	}
 	if stats.RespectedNights < 2 {
 		t.Fatalf("respected nights = %d, want at least 2", stats.RespectedNights)
@@ -317,6 +324,9 @@ func TestHistoryDetailsIncludeOrderedEvents(t *testing.T) {
 	if details.Events[0].Shell != "zsh" || details.Events[0].MatchedRule != "claude" {
 		t.Fatalf("first event = %+v, want shell zsh and matched rule claude", details.Events[0])
 	}
+	if got := details.Events[0].Timestamp.Format(time.RFC3339); got != "2026-04-23T23:30:00-07:00" {
+		t.Fatalf("first event timestamp = %q, want local curfew time", got)
+	}
 }
 
 func TestHistoryDetailsMaterializeQuietNight(t *testing.T) {
@@ -341,6 +351,37 @@ func TestHistoryDetailsMaterializeQuietNight(t *testing.T) {
 	}
 	if len(details.Events) != 0 {
 		t.Fatalf("quiet night events = %+v, want none", details.Events)
+	}
+}
+
+func TestHistoryDetailsDoNotFabricateBeforeInstallOrRetention(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	now := time.Date(2026, 4, 21, 12, 0, 0, 0, location)
+	application, _ := newTestApp(t, now)
+
+	if err := os.Chtimes(application.Paths.ConfigFile(), now, now); err != nil {
+		t.Fatalf("touch config file: %v", err)
+	}
+
+	details, err := application.HistoryDetails(context.Background(), "2026-04-20")
+	if err != nil {
+		t.Fatalf("history details before install: %v", err)
+	}
+	if details.Found {
+		t.Fatalf("expected no fabricated pre-install history, got %+v", details)
+	}
+
+	oldDetails, err := application.HistoryDetails(context.Background(), "2025-12-01")
+	if err != nil {
+		t.Fatalf("history details outside retention: %v", err)
+	}
+	if oldDetails.Found {
+		t.Fatalf("expected no fabricated retained history, got %+v", oldDetails)
 	}
 }
 
@@ -378,6 +419,10 @@ func newTestApp(t *testing.T, now time.Time) (*App, *testClock) {
 	cfg.Schedule.Timezone = "America/Los_Angeles"
 	if err := config.Save(layout.ConfigFile(), cfg); err != nil {
 		t.Fatalf("save config: %v", err)
+	}
+	installedAt := now.Add(-14 * 24 * time.Hour)
+	if err := os.Chtimes(layout.ConfigFile(), installedAt, installedAt); err != nil {
+		t.Fatalf("touch config file: %v", err)
 	}
 
 	sqliteStore, err := store.Open(layout.HistoryDB())

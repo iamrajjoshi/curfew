@@ -358,36 +358,8 @@ func TestShellHookSmokePTY(t *testing.T) {
 	for _, shellKind := range []string{"zsh", "bash", "fish"} {
 		shellKind := shellKind
 		t.Run(shellKind, func(t *testing.T) {
-			baselineSession := startShellPTY(t, env, shellKind)
-			t.Cleanup(func() {
-				cleanupPTYSession(baselineSession)
-			})
-			waitForPrompt(t, baselineSession)
-
-			baselineOffset := len(stripANSI(baselineSession.output.String()))
-			writePTYLine(t, baselineSession, "printf '__curfew_baseline__\\n'")
-			if _, ok := tryWaitForPromptAfter(baselineSession, baselineOffset, 5*time.Second); !ok {
-				t.Skipf("pty harness did not execute baseline command reliably for %s:\n%s", shellKind, stripANSI(baselineSession.output.String()))
-			}
-			baselineOutput := cleanedOutputAfter(baselineSession, baselineOffset)
-			if strings.Count(baselineOutput, "__curfew_baseline__") < 2 {
-				t.Skipf("pty harness did not surface baseline command output reliably for %s:\n%s", shellKind, baselineOutput)
-			}
-			stopCurfewPTY(t, baselineSession, "exit\n")
-
-			probeSession := startShellPTY(t, env, shellKind)
-			t.Cleanup(func() {
-				cleanupPTYSession(probeSession)
-			})
-			waitForPrompt(t, probeSession)
-
 			probePath := writeShellProbeScript(t, shellKind)
-			probeOffset := len(stripANSI(probeSession.output.String()))
-			writePTYPastedLine(t, probeSession, shellSourceCommand(shellKind, probePath))
-			if _, ok := tryWaitForPromptAfter(probeSession, probeOffset, 8*time.Second); !ok {
-				t.Skipf("pty harness did not execute sourced probe reliably for %s:\n%s", shellKind, stripANSI(probeSession.output.String()))
-			}
-			probeOutput := cleanedOutputAfter(probeSession, probeOffset)
+			probeOutput := runShellProbePTY(t, env, shellKind, probePath)
 			lower := strings.ToLower(probeOutput)
 			if strings.Contains(lower, "command not found") || strings.Contains(lower, "unknown command") {
 				t.Fatalf("shell probe surfaced a shell execution failure for %s, got:\n%s", shellKind, probeOutput)
@@ -404,8 +376,6 @@ func TestShellHookSmokePTY(t *testing.T) {
 			if strings.Count(probeOutput, "__curfew_after__") < 2 {
 				t.Fatalf("expected follow-up command output for %s, got:\n%s", shellKind, probeOutput)
 			}
-
-			stopCurfewPTY(t, probeSession, "exit\n")
 		})
 	}
 }
@@ -434,6 +404,7 @@ func newCLIEnv(t *testing.T) map[string]string {
 		"XDG_DATA_HOME":   xdgData,
 		"XDG_STATE_HOME":  xdgState,
 		"SHELL":           "/bin/zsh",
+		"CURFEW_TEST_NOW": "2026-04-23T23:30:00-07:00",
 	}
 }
 
@@ -544,12 +515,77 @@ func startCurfewPTY(t *testing.T, env map[string]string, args ...string) *ptySes
 func startShellPTY(t *testing.T, env map[string]string, shellKind string) *ptySession {
 	t.Helper()
 
+	command := newShellPTYCommand(t, env, shellKind, "-i")
+
+	ptmx, err := pty.Start(command)
+	if err != nil {
+		t.Fatalf("start shell pty: %v", err)
+	}
+
+	session := &ptySession{
+		ptmx: ptmx,
+		done: make(chan error, 1),
+		proc: command.Process,
+	}
+
+	go func() {
+		_, _ = io.Copy(&session.output, ptmx)
+		session.done <- command.Wait()
+	}()
+
+	return session
+}
+
+func runShellProbePTY(t *testing.T, env map[string]string, shellKind string, probePath string) string {
+	t.Helper()
+
+	command := newShellPTYCommand(t, env, shellKind, "-i", "-c", shellSourceCommand(shellKind, probePath))
+
+	ptmx, err := pty.Start(command)
+	if err != nil {
+		t.Fatalf("start shell probe pty: %v", err)
+	}
+	defer ptmx.Close()
+
+	var output bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		_, _ = io.Copy(&output, ptmx)
+		done <- command.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			clean := stripANSI(output.String())
+			if clean == "" {
+				t.Skipf("pty probe transport did not reach %s shell commands", shellKind)
+			}
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				t.Fatalf("shell probe exited with %d for %s\noutput:\n%s", exitErr.ExitCode(), shellKind, clean)
+			}
+			t.Fatalf("shell probe wait failed for %s: %v\noutput:\n%s", shellKind, err, clean)
+		}
+	case <-time.After(10 * time.Second):
+		clean := stripANSI(output.String())
+		_ = command.Process.Kill()
+		if clean == "" {
+			t.Skipf("pty probe transport did not reach %s shell commands", shellKind)
+		}
+		t.Fatalf("timed out waiting for shell probe for %s\noutput:\n%s", shellKind, clean)
+	}
+
+	return stripANSI(output.String())
+}
+
+func newShellPTYCommand(t *testing.T, env map[string]string, shellKind string, args ...string) *exec.Cmd {
+	t.Helper()
+
 	shellPath, err := exec.LookPath(shellKind)
 	if err != nil {
 		t.Skipf("%s is not installed", shellKind)
 	}
 
-	args := []string{"-i"}
 	command := exec.Command(shellPath, args...)
 	command.Dir = repoRoot(t)
 
@@ -573,7 +609,7 @@ func startShellPTY(t *testing.T, env map[string]string, shellKind string) *ptySe
 		if err := os.WriteFile(rcPath, []byte("PS1='PROMPT> '\n"), 0o644); err != nil {
 			t.Fatalf("write .bashrc: %v", err)
 		}
-		command.Args = []string{shellPath, "--noprofile", "--rcfile", rcPath, "-i"}
+		command.Args = append([]string{shellPath, "--noprofile", "--rcfile", rcPath}, args...)
 	case "fish":
 		configHome := env["XDG_CONFIG_HOME"]
 		if err := os.MkdirAll(filepath.Join(configHome, "fish"), 0o755); err != nil {
@@ -585,24 +621,7 @@ func startShellPTY(t *testing.T, env map[string]string, shellKind string) *ptySe
 		}
 	}
 	command.Env = environment
-
-	ptmx, err := pty.Start(command)
-	if err != nil {
-		t.Fatalf("start shell pty: %v", err)
-	}
-
-	session := &ptySession{
-		ptmx: ptmx,
-		done: make(chan error, 1),
-		proc: command.Process,
-	}
-
-	go func() {
-		_, _ = io.Copy(&session.output, ptmx)
-		session.done <- command.Wait()
-	}()
-
-	return session
+	return command
 }
 
 func shellInitCommand(kind string) string {

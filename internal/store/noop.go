@@ -1,13 +1,16 @@
 package store
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type Noop struct{}
 
 func (Noop) RecordEvent(context.Context, Event) error                 { return nil }
 func (Noop) UpsertSession(context.Context, SessionRecord) error       { return nil }
 func (Noop) History(context.Context, string) ([]HistoryRecord, error) { return nil, nil }
-func (Noop) SessionDetails(context.Context, string) (SessionDetails, error) {
+func (Noop) SessionDetails(context.Context, string, *time.Location) (SessionDetails, error) {
 	return SessionDetails{}, nil
 }
 func (Noop) TopCommands(context.Context, string, int) ([]CommandStat, error) {
