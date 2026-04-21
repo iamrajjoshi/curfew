@@ -12,14 +12,31 @@ import (
 const (
 	beginMarker = "# >>> curfew initialize >>>"
 	endMarker   = "# <<< curfew initialize <<<"
+
+	envInitDone   = "CURFEW_INIT_DONE"
+	envShellHook  = "CURFEW_SHELL_HOOK"
+	envShellKind  = "CURFEW_SHELL_KIND"
+	envHookActive = "CURFEW_HOOK_ACTIVE"
 )
+
+type Diagnostics struct {
+	DetectedShell         string
+	RCPath                string
+	ManagedBlockInstalled bool
+	HookActive            bool
+	HookShell             string
+}
 
 func Detect(explicit string, shellEnv string) string {
 	if explicit != "" {
 		return strings.ToLower(strings.TrimSpace(explicit))
 	}
-	base := filepath.Base(strings.TrimSpace(shellEnv))
-	if base == "" {
+	trimmed := strings.TrimSpace(shellEnv)
+	if trimmed == "" {
+		return "zsh"
+	}
+	base := filepath.Base(trimmed)
+	if base == "" || base == "." {
 		return "zsh"
 	}
 	return strings.ToLower(base)
@@ -148,6 +165,27 @@ func Installed(layout paths.Layout, kind string) (string, bool, error) {
 	return rcPath, strings.Contains(text, beginMarker) && strings.Contains(text, endMarker), nil
 }
 
+func Diagnose(layout paths.Layout, explicitShell string, shellEnv string, hookShell string, hookActive bool) (Diagnostics, error) {
+	kind := Detect(explicitShell, shellEnv)
+	rcPath, installed, err := Installed(layout, kind)
+	if err != nil {
+		return Diagnostics{}, err
+	}
+	if hookShell != "" {
+		hookShell = strings.ToLower(strings.TrimSpace(hookShell))
+	}
+	if hookActive && hookShell == "" {
+		hookShell = kind
+	}
+	return Diagnostics{
+		DetectedShell:         kind,
+		RCPath:                rcPath,
+		ManagedBlockInstalled: installed,
+		HookActive:            hookActive,
+		HookShell:             hookShell,
+	}, nil
+}
+
 func Init(kind string) (string, error) {
 	switch kind {
 	case "zsh":
@@ -164,10 +202,25 @@ func Init(kind string) (string, error) {
 func zshInit() string {
 	return strings.Join([]string{
 		"[[ -o interactive ]] || return 0",
-		"[[ -n ${CURFEW_INIT_DONE:-} ]] && return 0",
-		"export CURFEW_INIT_DONE=1",
-		"export CURFEW_SHELL_HOOK=1",
-		"export CURFEW_SHELL_KIND=zsh",
+		"[[ -n ${" + envInitDone + ":-} ]] && return 0",
+		"export " + envInitDone + "=1",
+		"export " + envShellHook + "=1",
+		"export " + envShellKind + "=zsh",
+		"function __curfew_should_bypass() {",
+		"  emulate -L zsh",
+		"  local cmd=\"$1\"",
+		"  [[ -z ${cmd//[[:space:]]/} ]] && return 0",
+		"  [[ -n ${" + envHookActive + ":-} || \"$cmd\" == curfew || \"$cmd\" == curfew\\ * ]] && return 0",
+		"  return 1",
+		"}",
+		"function __curfew_run_check() {",
+		"  emulate -L zsh",
+		"  local cmd=\"$1\"",
+		"  if __curfew_should_bypass \"$cmd\"; then",
+		"    return 0",
+		"  fi",
+		"  " + envHookActive + "=1 command curfew check --shell zsh -- \"$cmd\"",
+		"}",
 		"function __curfew_accept_line() {",
 		"  emulate -L zsh",
 		"  local cmd=\"$BUFFER\"",
@@ -175,13 +228,12 @@ func zshInit() string {
 		"    zle .accept-line",
 		"    return",
 		"  fi",
-		"  if [[ -n ${CURFEW_HOOK_ACTIVE:-} || \"$cmd\" == curfew || \"$cmd\" == curfew\\ * ]]; then",
+		"  if __curfew_should_bypass \"$cmd\"; then",
 		"    zle .accept-line",
 		"    return",
 		"  fi",
-		"  CURFEW_HOOK_ACTIVE=1 command curfew check --shell zsh -- \"$cmd\"",
+		"  __curfew_run_check \"$cmd\"",
 		"  local exit_status=$?",
-		"  unset CURFEW_HOOK_ACTIVE",
 		"  if (( exit_status == 0 )); then",
 		"    zle .accept-line",
 		"  else",
@@ -196,10 +248,23 @@ func zshInit() string {
 func bashInit() string {
 	return strings.Join([]string{
 		"[[ $- == *i* ]] || return 0",
-		"[[ -n ${CURFEW_INIT_DONE:-} ]] && return 0",
-		"export CURFEW_INIT_DONE=1",
-		"export CURFEW_SHELL_HOOK=1",
-		"export CURFEW_SHELL_KIND=bash",
+		"[[ -n ${" + envInitDone + ":-} ]] && return 0",
+		"export " + envInitDone + "=1",
+		"export " + envShellHook + "=1",
+		"export " + envShellKind + "=bash",
+		"__curfew_should_bypass() {",
+		"  local cmd=\"$1\"",
+		"  [[ -z ${cmd//[[:space:]]/} ]] && return 0",
+		"  [[ -n ${" + envHookActive + ":-} || \"$cmd\" == curfew || \"$cmd\" == curfew\\ * ]] && return 0",
+		"  return 1",
+		"}",
+		"__curfew_run_check() {",
+		"  local cmd=\"$1\"",
+		"  if __curfew_should_bypass \"$cmd\"; then",
+		"    return 0",
+		"  fi",
+		"  " + envHookActive + "=1 command curfew check --shell bash -- \"$cmd\"",
+		"}",
 		"__curfew_accept_line() {",
 		"  local cmd=\"$READLINE_LINE\"",
 		"  if [[ -z ${cmd//[[:space:]]/} ]]; then",
@@ -208,7 +273,7 @@ func bashInit() string {
 		"    READLINE_POINT=0",
 		"    return",
 		"  fi",
-		"  if [[ -n ${CURFEW_HOOK_ACTIVE:-} || \"$cmd\" == curfew || \"$cmd\" == curfew\\ * ]]; then",
+		"  if __curfew_should_bypass \"$cmd\"; then",
 		"    builtin history -s -- \"$cmd\"",
 		"    printf '\\n'",
 		"    READLINE_LINE=''",
@@ -216,9 +281,8 @@ func bashInit() string {
 		"    eval -- \"$cmd\"",
 		"    return",
 		"  fi",
-		"  CURFEW_HOOK_ACTIVE=1 command curfew check --shell bash -- \"$cmd\"",
+		"  __curfew_run_check \"$cmd\"",
 		"  local status=$?",
-		"  unset CURFEW_HOOK_ACTIVE",
 		"  if [[ $status -eq 0 ]]; then",
 		"    builtin history -s -- \"$cmd\"",
 		"    printf '\\n'",
@@ -238,24 +302,39 @@ func bashInit() string {
 func fishInit() string {
 	return strings.Join([]string{
 		"status is-interactive; or return",
-		"set -q CURFEW_INIT_DONE; and return",
-		"set -gx CURFEW_INIT_DONE 1",
-		"set -gx CURFEW_SHELL_HOOK 1",
-		"set -gx CURFEW_SHELL_KIND fish",
+		"set -q " + envInitDone + "; and return",
+		"set -gx " + envInitDone + " 1",
+		"set -gx " + envShellHook + " 1",
+		"set -gx " + envShellKind + " fish",
+		"function __curfew_should_bypass --argument cmd",
+		"  if test -z (string trim -- $cmd)",
+		"    return 0",
+		"  end",
+		"  if set -q " + envHookActive + "; or string match -rq '^\\s*curfew(\\s|$)' -- $cmd",
+		"    return 0",
+		"  end",
+		"  return 1",
+		"end",
+		"function __curfew_run_check --argument cmd",
+		"  __curfew_should_bypass \"$cmd\"; and return 0",
+		"  set -gx " + envHookActive + " 1",
+		"  command curfew check --shell fish -- \"$cmd\"",
+		"  set -l status $status",
+		"  set -e " + envHookActive,
+		"  return $status",
+		"end",
 		"function __curfew_execute",
 		"  set -l cmd (commandline)",
 		"  if test -z (string trim -- $cmd)",
 		"    commandline -f execute",
 		"    return",
 		"  end",
-		"  if set -q CURFEW_HOOK_ACTIVE; or string match -rq '^\\s*curfew(\\s|$)' -- $cmd",
+		"  if __curfew_should_bypass \"$cmd\"",
 		"    commandline -f execute",
 		"    return",
 		"  end",
-		"  set -gx CURFEW_HOOK_ACTIVE 1",
-		"  command curfew check --shell fish -- \"$cmd\"",
+		"  __curfew_run_check \"$cmd\"",
 		"  set -l status $status",
-		"  set -e CURFEW_HOOK_ACTIVE",
 		"  if test $status -eq 0",
 		"    commandline -f execute",
 		"  else",

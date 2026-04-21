@@ -386,14 +386,25 @@ func newDoctorCmd(application *app.App) *cobra.Command {
 		Use:   "doctor",
 		Short: "Run quick diagnostics",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			currentShell := shell.Detect("", os.Getenv("SHELL"))
-			rcPath, installed, err := shell.Installed(application.Paths, currentShell)
+			diagnostics, err := shell.Diagnose(
+				application.Paths,
+				"",
+				os.Getenv("SHELL"),
+				os.Getenv("CURFEW_SHELL_KIND"),
+				os.Getenv("CURFEW_SHELL_HOOK") == "1",
+			)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Current shell: %s\n", currentShell)
-			fmt.Fprintf(cmd.OutOrStdout(), "Managed block installed: %t (%s)\n", installed, rcPath)
-			fmt.Fprintf(cmd.OutOrStdout(), "Hook active in current shell: %t\n", os.Getenv("CURFEW_SHELL_HOOK") == "1")
+			fmt.Fprintf(cmd.OutOrStdout(), "Detected shell: %s\n", diagnostics.DetectedShell)
+			fmt.Fprintf(cmd.OutOrStdout(), "Managed rc/config path: %s\n", diagnostics.RCPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "Managed block installed: %t\n", diagnostics.ManagedBlockInstalled)
+			fmt.Fprintf(cmd.OutOrStdout(), "Hook active in current shell: %t\n", diagnostics.HookActive)
+			if diagnostics.HookShell != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Hook shell kind: %s\n", diagnostics.HookShell)
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "Hook shell kind: n/a")
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Config file: %s (%t)\n", application.Paths.ConfigFile(), application.HasConfig())
 			fmt.Fprintf(cmd.OutOrStdout(), "History DB: %s\n", application.Paths.HistoryDB())
 			fmt.Fprintf(cmd.OutOrStdout(), "Runtime state: %s\n", application.Paths.RuntimeFile())
