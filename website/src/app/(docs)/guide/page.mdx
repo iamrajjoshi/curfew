@@ -1,0 +1,101 @@
+export const metadata = { title: "Guide" }
+
+import { Callout } from "@/components/ui/Callout"
+
+# Guide
+
+Curfew is a local-first Go CLI and TUI that enforces terminal quiet hours through managed shell hooks. It blocks or friction-gates matching commands during your configured windows, then records whether you actually respected your own bedtime.
+
+## Install
+
+### Homebrew
+
+```bash
+brew install iamrajjoshi/tap/curfew
+```
+
+### Install with Go
+
+```bash
+go install github.com/iamrajjoshi/curfew@latest
+```
+
+Curfew is currently aimed at macOS and Linux interactive shell workflows.
+
+## Quick start
+
+```bash
+curfew
+curfew install --shell zsh
+exec zsh
+curfew doctor
+curfew status
+```
+
+That first `curfew` run launches the first-run setup flow if you have not written a config yet. After installation, your interactive shell calls `curfew check <cmd>` before matching commands execute.
+
+<Callout type="tip">
+If you use `bash` or `fish`, swap the shell flag accordingly. Curfew supports `zsh`, `bash`, and `fish`.
+</Callout>
+
+## Shell integration
+
+Curfew keeps shell integration intentionally thin:
+
+- `curfew install --shell zsh` appends a managed block to the right rc file.
+- `curfew init <shell>` prints the integration snippet directly.
+- `curfew doctor` tells you whether the hook is installed and active in the current shell.
+
+The shell hook is just an adapter. Schedule evaluation, rule matching, friction challenges, runtime state, and history all live in the Go binary.
+
+## Everyday controls
+
+These are the commands you will probably reach for most often:
+
+| Command | What it does |
+| --- | --- |
+| `curfew status` | Shows whether curfew is active right now |
+| `curfew snooze [15m]` | Buys a little more time, up to your nightly limit |
+| `curfew stop` | Disables curfew for the rest of the current session |
+| `curfew skip tonight` | Skips tonight entirely with friction |
+| `curfew history --days 7` | Shows recent adherence history |
+| `curfew stats --days 30` | Shows streaks and aggregate stats |
+
+## TUI overview
+
+When launched from an interactive terminal after setup, Curfew opens a Bubble Tea interface with six tabs:
+
+- `Dashboard`
+- `Schedule`
+- `Rules`
+- `Override`
+- `History`
+- `Stats`
+
+Useful keys:
+
+- `tab` / `shift-tab` switch tabs
+- `ctrl+s` saves the draft config
+- `ctrl+r` discards local edits and reloads config from disk
+- `r` refreshes runtime-derived data
+- `q` quits
+
+## History and stats
+
+Curfew stores two kinds of local state:
+
+- fast runtime state in `~/.local/state/curfew/runtime.json`
+- long-term history and rollups in `~/.local/share/curfew/history.db`
+
+That split keeps `curfew check` light enough for the shell hot path while still giving you nightly rollups, blocked attempts, snoozes, overrides, and streaks.
+
+## Privacy
+
+Curfew is fully local-first:
+
+- no telemetry
+- no accounts
+- no background service
+- no network calls
+
+`curfew doctor` will show you exactly which files Curfew is using on your machine.

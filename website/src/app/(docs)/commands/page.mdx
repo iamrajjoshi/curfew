@@ -1,0 +1,105 @@
+export const metadata = { title: "Commands" }
+
+import { Callout } from "@/components/ui/Callout"
+
+# Commands
+
+Curfew keeps the command surface intentionally small. Most day-to-day use comes down to setup, status checks, runtime controls, rules, and local history.
+
+## Setup
+
+```bash
+curfew                    # first-run setup or dashboard
+curfew install --shell zsh
+curfew uninstall --shell zsh
+curfew init zsh
+curfew doctor
+```
+
+- `curfew` launches first-run setup if you do not have a config yet. Otherwise it opens the dashboard in an interactive terminal.
+- `curfew install` adds a managed rc block for `zsh`, `bash`, or `fish`.
+- `curfew uninstall` removes that managed block.
+- `curfew init <shell>` prints the raw shell snippet.
+- `curfew doctor` shows shell detection, managed block status, hook activity, config path, runtime path, history path, and resolved timezone.
+
+## Status and checks
+
+```bash
+curfew status
+curfew check git push
+curfew check --json --shell zsh git push
+```
+
+- `curfew status` prints the current curfew state.
+- `curfew check <cmd>` is the internal command the shell hook uses before running an interactive command.
+- `--json` returns machine-readable output.
+- `--shell` records which shell backend invoked the check.
+
+<Callout type="info">
+`curfew check` is designed for the shell hot path. Keep it boring, predictable, and fast.
+</Callout>
+
+## Runtime controls
+
+```bash
+curfew start
+curfew stop
+curfew snooze
+curfew snooze 30m
+curfew skip tonight
+```
+
+- `curfew start` force-enables curfew for the current session.
+- `curfew stop` disables curfew for the rest of the current session, with friction.
+- `curfew snooze [duration]` extends your runway for a short period.
+- `curfew skip tonight` skips the whole curfew session, also with friction.
+
+## Rules
+
+```bash
+curfew rules
+curfew rules list
+curfew rules add "git push*" --action warn
+curfew rules rm "git push*"
+```
+
+Rules are first-match-wins and support three matching shapes:
+
+- exact command word: `claude`
+- multi-word prefix: `git commit`
+- trailing `*` prefix: `git push*`
+
+Allowlist entries always bypass curfew before rules are checked.
+
+## History and stats
+
+```bash
+curfew history --days 7
+curfew history show 2026-04-20
+curfew stats --days 30
+```
+
+- `history` shows recent nightly summaries.
+- `history show <YYYY-MM-DD>` expands one curfew night with events.
+- `stats` shows aggregate counts, streaks, adherence rate, and top after-hours commands.
+
+Both `history` and `stats` also support `--json`.
+
+## Configuration
+
+```bash
+curfew config
+curfew config edit
+```
+
+- `curfew config` opens the schedule tab in the TUI if you are interactive and already configured.
+- `curfew config edit` runs the first-run style config editor explicitly.
+
+## Version
+
+```bash
+curfew version
+curfew --version
+```
+
+Both forms print the current Curfew version string.

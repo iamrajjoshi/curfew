@@ -1,0 +1,117 @@
+export const metadata = { title: "Configuration" }
+
+import { Callout } from "@/components/ui/Callout"
+import { DirectoryTree } from "@/components/ui/DirectoryTree"
+
+# Configuration
+
+Curfew keeps configuration deliberately small: schedule, grace periods, override behavior, rules, allowlist entries, and retention.
+
+## File locations
+
+- Config file: `~/.config/curfew/config.toml`
+- Runtime state: `~/.local/state/curfew/runtime.json`
+- History database: `~/.local/share/curfew/history.db`
+
+<DirectoryTree />
+
+## Schedule
+
+The `schedule` section defines your timezone, default quiet hours, and optional weekday overrides.
+
+- `timezone = "auto"` uses the machine's local timezone
+- `schedule.default` is the baseline bedtime and wake pair
+- `schedule.overrides.<weekday>` lets you loosen or tighten specific days
+
+Curfew evaluates sessions in local wall-clock time and supports quiet hours that cross midnight.
+
+## Grace and hard stop
+
+The `grace` section controls how the night ramps up:
+
+- `warning_window` starts the early warning period before bedtime
+- `hard_stop_after` defines a stricter wall-clock cutoff later in the night
+- `snooze_max_per_night` limits how often you can ask for more time
+- `snooze_duration` sets the default duration for `curfew snooze`
+
+## Override friction
+
+`override.preset` supports:
+
+- `soft`
+- `medium`
+- `hard`
+- `custom`
+
+The built-in options map the warning, curfew, and hard-stop tiers to different friction profiles. Custom mode lets you define each tier directly with actions such as allow, prompt, wait, passphrase, math, combined, or block.
+
+<Callout type="tip">
+If you want the smallest mental overhead, start with `medium`. It keeps the warning tier gentle, adds a passphrase during curfew, and blocks after the hard stop.
+</Callout>
+
+## Rules and allowlist
+
+The `rules` section decides what Curfew cares about after hours:
+
+- `default_action` sets the fallback when no rule matches
+- `[[rules.rule]]` entries are evaluated in order
+- first match wins
+
+`allowlist.always` is checked before any rule matching. That is where you keep harmless commands like `ls`, `cd`, `man`, `curfew`, or `clear`.
+
+## Logging
+
+`logging.retain_days` controls how long Curfew keeps long-term history before purging older data.
+
+## Example config
+
+```toml
+[schedule]
+timezone = "auto"
+
+[schedule.default]
+bedtime = "23:00"
+wake = "07:00"
+
+[schedule.overrides.friday]
+bedtime = "00:00"
+wake = "09:00"
+
+[schedule.overrides.saturday]
+bedtime = "00:00"
+wake = "09:00"
+
+[grace]
+warning_window = "30m"
+hard_stop_after = "01:00"
+snooze_max_per_night = 2
+snooze_duration = "15m"
+
+[override]
+preset = "medium"
+method = "passphrase"
+passphrase = "i am choosing to break my own rule"
+wait_seconds = 60
+math_difficulty = "medium"
+
+[rules]
+default_action = "allow"
+
+[[rules.rule]]
+pattern = "claude"
+action = "block"
+
+[[rules.rule]]
+pattern = "git push*"
+action = "warn"
+
+[[rules.rule]]
+pattern = "terraform apply*"
+action = "block"
+
+[allowlist]
+always = ["ls", "cd", "cat", "less", "man", "tldr", "curfew", "exit", "clear"]
+
+[logging]
+retain_days = 90
+```

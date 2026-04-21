@@ -10,6 +10,7 @@
 
   <p>
     <a href="https://github.com/iamrajjoshi/curfew/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/iamrajjoshi/curfew/ci.yml?branch=master&label=ci"></a>
+    <a href="https://iamrajjoshi.github.io/curfew/guide/"><img alt="Docs" src="https://img.shields.io/badge/docs-guide-1abcfe"></a>
     <a href="https://github.com/iamrajjoshi/curfew/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/iamrajjoshi/curfew?color=8b5cf6"></a>
     <img alt="Go 1.26+" src="https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white">
     <img alt="Privacy" src="https://img.shields.io/badge/privacy-local--first-111827">
@@ -232,6 +233,15 @@ There is no background daemon. Each shell check is on-demand and re-evaluates ag
 go test ./...
 go build ./...
 go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean --skip=publish
+```
+
+Website work lives in `website/`:
+
+```bash
+cd website
+pnpm install
+pnpm dev
+pnpm build
 ```
 
 The repo includes unit, integration, TUI-model, and end-to-end coverage. CI runs the Go test and build matrix on macOS and Linux.

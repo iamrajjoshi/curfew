@@ -30,3 +30,30 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+  website:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.25.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: website/pnpm-lock.yaml
+
+      - name: Install website dependencies
+        working-directory: website
+        run: pnpm install --frozen-lockfile
+
+      - name: Build website
+        working-directory: website
+        run: pnpm build

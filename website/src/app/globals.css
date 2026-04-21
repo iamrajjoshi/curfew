@@ -1,0 +1,255 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: light;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-curfew-bg text-curfew-text antialiased;
+    background-image:
+      radial-gradient(circle at 10% 15%, rgba(162, 89, 255, 0.08), transparent 22%),
+      radial-gradient(circle at 90% 8%, rgba(26, 188, 254, 0.09), transparent 22%),
+      radial-gradient(circle at 88% 60%, rgba(10, 207, 131, 0.08), transparent 24%);
+  }
+
+  ::selection {
+    background: rgba(162, 89, 255, 0.18);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #d9d9e1;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #c4c4ce;
+  }
+}
+
+.prose {
+  --tw-prose-body: #454550;
+  --tw-prose-headings: #0f0f14;
+  --tw-prose-links: #a259ff;
+  --tw-prose-bold: #0f0f14;
+  --tw-prose-code: #a259ff;
+  --tw-prose-quotes: #6e6e78;
+  --tw-prose-quote-borders: #e5e5ea;
+  --tw-prose-counters: #6e6e78;
+  --tw-prose-bullets: #a259ff;
+  --tw-prose-hr: #e5e5ea;
+  --tw-prose-th-borders: #e5e5ea;
+  --tw-prose-td-borders: #ececf1;
+  --tw-prose-pre-bg: #fffdfc;
+  --tw-prose-pre-code: #454550;
+}
+
+.prose :is(h1, h2, h3, h4) {
+  scroll-margin-top: 7rem;
+}
+
+.prose h1 {
+  font-family: "Whyte Inktrap", "PP Editorial New", "Iowan Old Style", Georgia, serif;
+  font-weight: 500;
+  letter-spacing: -0.05em;
+  color: #0f0f14;
+  font-size: clamp(2rem, 3vw, 4rem);
+  margin-top: 0;
+  margin-bottom: 1.5rem;
+  line-height: 1;
+}
+
+.prose h2 {
+  font-family: "Whyte Inktrap", "PP Editorial New", "Iowan Old Style", Georgia, serif;
+  font-weight: 500;
+  letter-spacing: -0.04em;
+  color: #0f0f14;
+  font-size: 2rem;
+  margin-top: 2.5rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #ececf1;
+  line-height: 1.3;
+}
+
+.prose h3 {
+  font-family: "Whyte Inktrap", "PP Editorial New", "Iowan Old Style", Georgia, serif;
+  font-weight: 500;
+  color: #0f0f14;
+  font-size: 1.2rem;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  line-height: 1.4;
+}
+
+.prose h4 {
+  font-weight: 600;
+  color: #0f0f14;
+  font-size: 1rem;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.prose p {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+  line-height: 1.75;
+}
+
+.prose ul,
+.prose ol {
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+  padding-left: 1.5rem;
+}
+
+.prose li {
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.prose code:not(pre code) {
+  background: rgba(162, 89, 255, 0.09);
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 0.85em;
+  font-family: "Söhne Mono", var(--font-jetbrains), monospace;
+  color: #8b3dff;
+}
+
+.prose code:not(pre code)::before,
+.prose code:not(pre code)::after {
+  content: none;
+}
+
+.prose pre {
+  background: #fffdfc !important;
+  border: 1px solid #ececf1;
+  border-radius: 16px;
+  padding: 1rem 1.25rem;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.7;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 8px 24px rgba(15, 15, 20, 0.05);
+}
+
+.prose pre code {
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+  color: #454550;
+  font-family: "Söhne Mono", var(--font-jetbrains), monospace;
+}
+
+.prose a {
+  color: #8b3dff;
+  text-decoration: none;
+  position: relative;
+}
+
+.prose a::after {
+  content: "";
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 0;
+  height: 1px;
+  background: #8b3dff;
+  transition: width 0.25s ease;
+}
+
+.prose a:hover::after {
+  width: 100%;
+}
+
+.prose strong {
+  color: #0f0f14;
+  font-weight: 600;
+}
+
+.prose table {
+  font-size: 0.85rem;
+  width: 100%;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+  border-collapse: collapse;
+}
+
+.prose th {
+  color: #0f0f14;
+  font-weight: 600;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid #e5e5ea;
+}
+
+.prose td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #ececf1;
+  vertical-align: top;
+}
+
+.prose tr:last-child td {
+  border-bottom: none;
+}
+
+.prose blockquote {
+  border-left: 3px solid #a259ff;
+  padding-left: 1rem;
+  color: #6e6e78;
+  font-style: italic;
+}
+
+.prose hr {
+  border-color: #e5e5ea;
+  margin-top: 2rem;
+  margin-bottom: 2rem;
+}
+
+.prose img {
+  border-radius: 16px;
+  border: 1px solid #ececf1;
+}
+
+.prism-panel {
+  border: 1px solid #e5e5ea;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 8px 24px rgba(15, 15, 20, 0.08);
+  backdrop-filter: blur(16px);
+}
+
+.section-tint-purple {
+  background: linear-gradient(180deg, rgba(162, 89, 255, 0.1), rgba(162, 89, 255, 0.04));
+}
+
+.section-tint-orange {
+  background: linear-gradient(180deg, rgba(242, 78, 30, 0.1), rgba(242, 78, 30, 0.04));
+}
+
+.section-tint-green {
+  background: linear-gradient(180deg, rgba(10, 207, 131, 0.1), rgba(10, 207, 131, 0.04));
+}
+
+.section-tint-red {
+  background: linear-gradient(180deg, rgba(255, 114, 98, 0.1), rgba(255, 114, 98, 0.04));
+}
+
+.section-tint-blue {
+  background: linear-gradient(180deg, rgba(26, 188, 254, 0.1), rgba(26, 188, 254, 0.04));
+}
