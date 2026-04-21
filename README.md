@@ -1,7 +1,7 @@
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img src="assets/logo.svg" alt="curfew" width="640">
+    <img src="assets/logo.svg" alt="curfew" width="220">
   </picture>
 
   <p><strong>a local-first terminal curfew for your quiet hours</strong></p>
@@ -164,7 +164,6 @@ retain_days = 90
 | `curfew install` | appends a managed init block to your shell rc file |
 | `curfew init <shell>` | prints the shell integration snippet |
 | `curfew doctor` | shows hook and path diagnostics |
-
 ## TUI
 
 The Bubble Tea interface currently includes:
@@ -234,7 +233,3 @@ The repo includes unit, integration, TUI-model, and end-to-end coverage. CI runs
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, testing expectations, and PR guidance.
-
-## Contributors
-
-Current contributors are listed in [CONTRIBUTORS.md](CONTRIBUTORS.md).
