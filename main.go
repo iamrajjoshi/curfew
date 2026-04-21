@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/rajjoshi/curfew/cmd"
+	"github.com/iamrajjoshi/curfew/cmd"
 )
 
 func main() {

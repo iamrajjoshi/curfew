@@ -9,9 +9,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
-	"github.com/rajjoshi/curfew/internal/app"
-	"github.com/rajjoshi/curfew/internal/friction"
-	"github.com/rajjoshi/curfew/internal/schedule"
+	"github.com/iamrajjoshi/curfew/internal/app"
+	"github.com/iamrajjoshi/curfew/internal/friction"
+	"github.com/iamrajjoshi/curfew/internal/schedule"
 )
 
 type disablePromptMsg struct {

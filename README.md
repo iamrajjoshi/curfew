@@ -10,9 +10,11 @@
 
   <p>
     <a href="https://github.com/iamrajjoshi/curfew/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/iamrajjoshi/curfew/ci.yml?branch=master&label=ci"></a>
+    <a href="https://github.com/iamrajjoshi/curfew/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/iamrajjoshi/curfew?color=8b5cf6"></a>
     <img alt="Go 1.26+" src="https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white">
     <img alt="Privacy" src="https://img.shields.io/badge/privacy-local--first-111827">
     <img alt="Shells" src="https://img.shields.io/badge/shells-zsh%20%7C%20bash%20%7C%20fish-8b5cf6">
+    <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
   </p>
 </div>
 
@@ -32,10 +34,16 @@ It is a single Go binary, uses managed shell hooks instead of a daemon, stores e
 
 ## Install
 
+Homebrew:
+
+```bash
+brew install iamrajjoshi/tap/curfew
+```
+
 Install with Go:
 
 ```bash
-go install github.com/rajjoshi/curfew@latest
+go install github.com/iamrajjoshi/curfew@latest
 ```
 
 Build from source:
@@ -46,7 +54,7 @@ cd curfew
 go build ./...
 ```
 
-Current scope is macOS and Linux. Interactive shell enforcement is the primary path today; PATH shims and packaging automation can come later.
+Current scope is macOS and Linux. Interactive shell enforcement is the primary path today; PATH shims for non-interactive/script contexts can come later.
 
 ## Quick Start
 
@@ -166,6 +174,8 @@ retain_days = 90
 | `curfew install` | appends a managed init block to your shell rc file |
 | `curfew init <shell>` | prints the shell integration snippet |
 | `curfew doctor` | shows hook and path diagnostics |
+| `curfew version` / `curfew --version` | prints the current binary version |
+
 ## TUI
 
 The Bubble Tea interface currently includes:
@@ -221,17 +231,24 @@ There is no background daemon. Each shell check is on-demand and re-evaluates ag
 ```bash
 go test ./...
 go build ./...
+go run github.com/goreleaser/goreleaser/v2@latest release --snapshot --clean --skip=publish
 ```
 
 The repo includes unit, integration, TUI-model, and end-to-end coverage. CI runs the Go test and build matrix on macOS and Linux.
 
+Tagged releases `vX.Y.Z` publish GitHub release artifacts and update the Homebrew formula in `iamrajjoshi/homebrew-tap`.
+
 ## Roadmap
 
-- release automation and binary installers
 - richer history drill-in and heatmap views
 - optional PATH shims for non-interactive/script enforcement
-- packaging for Homebrew and other distribution channels
+- deeper shell-hook hardening and PTY coverage
+- packaging polish for additional distribution channels
 
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, testing expectations, and PR guidance.
+
+## License
+
+[MIT](LICENSE)

@@ -1,4 +1,4 @@
-module github.com/rajjoshi/curfew
+module github.com/iamrajjoshi/curfew
 
 go 1.26
 

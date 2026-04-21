@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/rajjoshi/curfew/internal/store"
+	"github.com/iamrajjoshi/curfew/internal/store"
 )
 
 var rangePresets = []int{7, 30, 90}

@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
-	"github.com/rajjoshi/curfew/internal/config"
+	"github.com/iamrajjoshi/curfew/internal/config"
 )
 
 var weekdayOrder = []string{

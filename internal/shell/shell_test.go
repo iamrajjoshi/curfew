@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rajjoshi/curfew/internal/paths"
+	"github.com/iamrajjoshi/curfew/internal/paths"
 )
 
 func TestInstallAndUninstallManagedBlock(t *testing.T) {

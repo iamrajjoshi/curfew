@@ -3,7 +3,7 @@ package rules
 import (
 	"strings"
 
-	"github.com/rajjoshi/curfew/internal/config"
+	"github.com/iamrajjoshi/curfew/internal/config"
 )
 
 type Kind string

@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rajjoshi/curfew/internal/config"
-	"github.com/rajjoshi/curfew/internal/friction"
-	"github.com/rajjoshi/curfew/internal/paths"
-	"github.com/rajjoshi/curfew/internal/rules"
-	"github.com/rajjoshi/curfew/internal/runtime"
-	"github.com/rajjoshi/curfew/internal/schedule"
-	"github.com/rajjoshi/curfew/internal/store"
+	"github.com/iamrajjoshi/curfew/internal/config"
+	"github.com/iamrajjoshi/curfew/internal/friction"
+	"github.com/iamrajjoshi/curfew/internal/paths"
+	"github.com/iamrajjoshi/curfew/internal/rules"
+	"github.com/iamrajjoshi/curfew/internal/runtime"
+	"github.com/iamrajjoshi/curfew/internal/schedule"
+	"github.com/iamrajjoshi/curfew/internal/store"
 )
 
 type App struct {

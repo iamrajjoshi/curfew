@@ -11,9 +11,9 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/rajjoshi/curfew/internal/app"
-	"github.com/rajjoshi/curfew/internal/config"
-	"github.com/rajjoshi/curfew/internal/store"
+	"github.com/iamrajjoshi/curfew/internal/app"
+	"github.com/iamrajjoshi/curfew/internal/config"
+	"github.com/iamrajjoshi/curfew/internal/store"
 )
 
 type tab struct {

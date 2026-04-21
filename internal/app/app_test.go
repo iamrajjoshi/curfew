@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rajjoshi/curfew/internal/config"
-	"github.com/rajjoshi/curfew/internal/paths"
-	"github.com/rajjoshi/curfew/internal/runtime"
-	"github.com/rajjoshi/curfew/internal/store"
+	"github.com/iamrajjoshi/curfew/internal/config"
+	"github.com/iamrajjoshi/curfew/internal/paths"
+	"github.com/iamrajjoshi/curfew/internal/runtime"
+	"github.com/iamrajjoshi/curfew/internal/store"
 )
 
 func TestCheckHistoryStatsAndSnooze(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rajjoshi/curfew/internal/config"
-	"github.com/rajjoshi/curfew/internal/schedule"
+	"github.com/iamrajjoshi/curfew/internal/config"
+	"github.com/iamrajjoshi/curfew/internal/schedule"
 )
 
 type Kind string

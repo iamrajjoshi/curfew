@@ -3,7 +3,7 @@ package rules
 import (
 	"testing"
 
-	"github.com/rajjoshi/curfew/internal/config"
+	"github.com/iamrajjoshi/curfew/internal/config"
 )
 
 func TestEvaluate(t *testing.T) {

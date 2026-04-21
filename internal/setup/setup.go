@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
-	"github.com/rajjoshi/curfew/internal/config"
+	"github.com/iamrajjoshi/curfew/internal/config"
 )
 
 func Run(current config.Config) (config.Config, error) {

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/rajjoshi/curfew/internal/paths"
+	"github.com/iamrajjoshi/curfew/internal/paths"
 )
 
 const (

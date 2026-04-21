@@ -11,12 +11,12 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/rajjoshi/curfew/internal/app"
-	"github.com/rajjoshi/curfew/internal/config"
-	"github.com/rajjoshi/curfew/internal/schedule"
-	"github.com/rajjoshi/curfew/internal/setup"
-	"github.com/rajjoshi/curfew/internal/shell"
-	"github.com/rajjoshi/curfew/internal/tui"
+	"github.com/iamrajjoshi/curfew/internal/app"
+	"github.com/iamrajjoshi/curfew/internal/config"
+	"github.com/iamrajjoshi/curfew/internal/schedule"
+	"github.com/iamrajjoshi/curfew/internal/setup"
+	"github.com/iamrajjoshi/curfew/internal/shell"
+	"github.com/iamrajjoshi/curfew/internal/tui"
 )
 
 func Execute() error {

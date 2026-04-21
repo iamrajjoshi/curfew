@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rajjoshi/curfew/internal/config"
+	"github.com/iamrajjoshi/curfew/internal/config"
 )
 
 func TestEvaluateOvernightAndOverrides(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rajjoshi/curfew/internal/config"
+	"github.com/iamrajjoshi/curfew/internal/config"
 )
 
 type Tier string

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/rajjoshi/curfew/internal/config"
+	"github.com/iamrajjoshi/curfew/internal/config"
 )
 
 var (

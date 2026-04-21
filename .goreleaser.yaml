@@ -1,0 +1,44 @@
+version: 2
+
+builds:
+  - main: .
+    binary: curfew
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/iamrajjoshi/curfew/cmd.version={{.Version}}
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "curfew_{{ .Os }}_{{ .Arch }}"
+
+brews:
+  - name: curfew
+    repository:
+      owner: iamrajjoshi
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/iamrajjoshi/curfew
+    description: A local-first terminal curfew for risky commands during quiet hours
+    license: MIT
+    install: |
+      bin.install "curfew"
+    test: |
+      system bin/"curfew", "version"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
