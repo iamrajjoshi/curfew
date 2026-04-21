@@ -4,6 +4,8 @@
     <img src="assets/logo.svg" alt="curfew" width="220">
   </picture>
 
+  <h1>curfew</h1>
+
   <p><strong>a local-first terminal curfew for your quiet hours</strong></p>
 
   <p>
