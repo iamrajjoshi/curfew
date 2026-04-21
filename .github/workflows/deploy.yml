@@ -44,8 +44,6 @@ jobs:
 
       - name: Build website
         working-directory: website
-        env:
-          NEXT_PUBLIC_BASE_PATH: /curfew
         run: pnpm build
 
       - name: Upload GitHub Pages artifact
