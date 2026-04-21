@@ -53,6 +53,11 @@ type actionMsg struct {
 	reload bool
 }
 
+type historyDetailMsg struct {
+	details store.SessionDetails
+	err     error
+}
+
 type modalSubmittedMsg struct{}
 type modalCancelledMsg struct{}
 
@@ -77,7 +82,9 @@ type rulesTab struct {
 type overrideTab struct{}
 
 type historyTab struct {
-	scroll int
+	scroll   int
+	selected int
+	detail   *store.SessionDetails
 }
 
 type statsTab struct {
@@ -168,6 +175,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runtime = message.runtime
 		m.rulesTab.clamp(m.draft)
 		m.historyTab.clamp(m.runtime.History)
+		m.historyTab.detail = nil
 		m.statsTab.clamp()
 		configChanged := !reflect.DeepEqual(previousPersisted, m.persisted)
 		if !message.syncDraft && configChanged && !wasDirty && m.dirty {
@@ -198,6 +206,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			return m, m.loadSnapshot(false)
 		}
+		return m, nil
+	case historyDetailMsg:
+		m.loading = false
+		if message.err != nil {
+			m.flash = message.err.Error()
+			return m, nil
+		}
+		if !message.details.Found {
+			m.flash = "No history for that night."
+			return m, nil
+		}
+		m.historyTab.detail = &message.details
+		m.flash = fmt.Sprintf("Showing history for %s.", message.details.Session.Date)
 		return m, nil
 	case disablePromptMsg:
 		m.flash = "Override still requested."
@@ -399,6 +420,13 @@ func (m *model) loadSnapshot(syncDraft bool) tea.Cmd {
 	}
 }
 
+func (m *model) loadHistoryDetail(date string) tea.Cmd {
+	return func() tea.Msg {
+		details, err := m.app.HistoryDetails(context.Background(), date)
+		return historyDetailMsg{details: details, err: err}
+	}
+}
+
 func (m *model) saveDraft() tea.Cmd {
 	draft := config.Clone(m.draft)
 	return func() tea.Msg {
@@ -426,8 +454,10 @@ func (m model) helpText() string {
 		return line + ", / edit probe, a add rule, e edit, d delete, g edit defaults, J/K reorder"
 	case "override":
 		return line + ", p edit preset settings, 1/2/3 edit warning/curfew/hard-stop custom tiers"
-	case "history", "stats":
-		return line + ", 1/2/3 set range to 7/30/90 days, up/down scroll"
+	case "history":
+		return line + ", 1/2/3 set range to 7/30/90 days, up/down move, enter drill in, esc/backspace return"
+	case "stats":
+		return line + ", 1/2/3 set range to 7/30/90 days"
 	default:
 		return line
 	}

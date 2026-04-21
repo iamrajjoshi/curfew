@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -181,6 +182,102 @@ func TestDashboardCombinedWaitOpensPromptAfterDelay(t *testing.T) {
 	}
 }
 
+func TestHistoryTabEnterShowsDetailAndEscReturns(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	now := time.Date(2026, 4, 23, 23, 30, 0, 0, location)
+	application := newTestApp(t, now)
+	if _, err := application.Check(context.Background(), "claude", app.CheckOptions{
+		Shell: "zsh",
+		In:    strings.NewReader("nope\n"),
+		Out:   &strings.Builder{},
+	}); err != nil {
+		t.Fatalf("blocked check: %v", err)
+	}
+	if _, err := application.Check(context.Background(), "claude", app.CheckOptions{
+		Shell: "zsh",
+		In:    strings.NewReader("i am choosing to break my own rule\n"),
+		Out:   &strings.Builder{},
+	}); err != nil {
+		t.Fatalf("allowed check: %v", err)
+	}
+
+	current := loadModel(t, application, "history")
+	current = runKeyMsg(t, current, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if current.historyTab.detail == nil {
+		t.Fatal("expected history detail to open")
+	}
+	view := current.historyTab.view(current)
+	if !strings.Contains(view, "History Detail") || !strings.Contains(view, "Events") {
+		t.Fatalf("unexpected detail view:\n%s", view)
+	}
+
+	current = runKeyMsg(t, current, tea.KeyMsg{Type: tea.KeyEsc})
+	if current.historyTab.detail != nil {
+		t.Fatal("expected esc to close history detail")
+	}
+}
+
+func TestHistoryTabQuietNightDetailShowsNoInterceptedCommands(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	now := time.Date(2026, 4, 21, 12, 0, 0, 0, location)
+	current := loadModel(t, newTestApp(t, now), "history")
+
+	view := current.historyTab.view(current)
+	if !strings.Contains(view, "2026-04-20") {
+		t.Fatalf("expected quiet night in history list, got:\n%s", view)
+	}
+
+	current = runKeyMsg(t, current, tea.KeyMsg{Type: tea.KeyEnter})
+	if current.historyTab.detail == nil {
+		t.Fatal("expected quiet-night detail to open")
+	}
+	view = current.historyTab.view(current)
+	if !strings.Contains(view, "No intercepted commands.") {
+		t.Fatalf("expected quiet-night detail message, got:\n%s", view)
+	}
+}
+
+func TestStatsTabShowsRicherSummaryAndTopCommands(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	now := time.Date(2026, 4, 23, 23, 30, 0, 0, location)
+	application := newTestApp(t, now)
+	if _, err := application.Check(context.Background(), "claude", app.CheckOptions{
+		Shell: "zsh",
+		In:    strings.NewReader("nope\n"),
+		Out:   &strings.Builder{},
+	}); err != nil {
+		t.Fatalf("blocked check: %v", err)
+	}
+
+	current := loadModel(t, application, "stats")
+	view := current.statsTab.view(current)
+	if !strings.Contains(view, "Total nights:") {
+		t.Fatalf("expected total nights in stats view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Adherence rate:") {
+		t.Fatalf("expected adherence rate in stats view, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Top after-hours commands:") || !strings.Contains(view, "claude") {
+		t.Fatalf("expected top commands in stats view, got:\n%s", view)
+	}
+}
+
 func loadedTestModel(t *testing.T) model {
 	t.Helper()
 
@@ -189,8 +286,13 @@ func loadedTestModel(t *testing.T) model {
 		t.Fatalf("load location: %v", err)
 	}
 	now := time.Date(2026, 4, 22, 23, 30, 0, 0, location)
-	application := newTestApp(t, now)
-	current := newModel(application, "dashboard")
+	return loadModel(t, newTestApp(t, now), "dashboard")
+}
+
+func loadModel(t *testing.T, application *app.App, initialTab string) model {
+	t.Helper()
+
+	current := newModel(application, initialTab)
 	message := current.Init()()
 	updated, _ := current.Update(message)
 	return updated.(model)
