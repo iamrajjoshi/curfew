@@ -130,6 +130,52 @@ func TestCLIEndToEndInstallRulesAndStatusFallback(t *testing.T) {
 	}
 }
 
+func TestCLIVersionSurface(t *testing.T) {
+	t.Parallel()
+
+	env := newCLIEnv(t)
+
+	command := runCurfew(t, env, "", "version")
+	if command.exitCode != 0 {
+		t.Fatalf("version exit code = %d, stderr = %s", command.exitCode, command.stderr)
+	}
+	if strings.TrimSpace(command.stdout) != "curfew dev" {
+		t.Fatalf("version stdout = %q, want %q", command.stdout, "curfew dev\n")
+	}
+
+	flag := runCurfew(t, env, "", "--version")
+	if flag.exitCode != 0 {
+		t.Fatalf("--version exit code = %d, stderr = %s", flag.exitCode, flag.stderr)
+	}
+	if strings.TrimSpace(flag.stdout) != "curfew dev" {
+		t.Fatalf("--version stdout = %q, want %q", flag.stdout, "curfew dev\n")
+	}
+
+	help := runCurfew(t, env, "", "version", "--help")
+	if help.exitCode != 0 {
+		t.Fatalf("version --help exit code = %d, stderr = %s", help.exitCode, help.stderr)
+	}
+	if !strings.Contains(help.stdout, "Show curfew version") {
+		t.Fatalf("expected version help output, got:\n%s", help.stdout)
+	}
+
+	extra := runCurfew(t, env, "", "version", "extra")
+	if extra.exitCode == 0 {
+		t.Fatalf("version extra should fail, stdout = %s", extra.stdout)
+	}
+	if !strings.Contains(extra.stderr, "unknown command \"extra\" for \"curfew version\"") {
+		t.Fatalf("unexpected version extra stderr:\n%s", extra.stderr)
+	}
+
+	flagExtra := runCurfew(t, env, "", "--version", "extra")
+	if flagExtra.exitCode == 0 {
+		t.Fatalf("--version extra should fail, stdout = %s", flagExtra.stdout)
+	}
+	if !strings.Contains(flagExtra.stderr, "unknown command \"extra\" for \"curfew\"") {
+		t.Fatalf("unexpected --version extra stderr:\n%s", flagExtra.stderr)
+	}
+}
+
 func TestCLIEndToEndSnoozeFlow(t *testing.T) {
 	t.Parallel()
 
@@ -190,7 +236,7 @@ func TestCLIInteractiveTUIEntrypoints(t *testing.T) {
 	env := newCLIEnv(t)
 
 	rootSession := startCurfewPTY(t, env)
-	waitForPTYText(t, rootSession, "Rules active: 8")
+	waitForPTYText(t, rootSession, "Rules active:")
 	stopCurfewPTY(t, rootSession, "q")
 
 	configSession := startCurfewPTY(t, env, "config")
@@ -202,12 +248,79 @@ func TestCLIInteractiveTUIEntrypoints(t *testing.T) {
 	stopCurfewPTY(t, rulesSession, "q")
 }
 
+func TestShellHooksEndToEnd(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("CURFEW_RUN_PTY_E2E") == "" {
+		t.Skip("set CURFEW_RUN_PTY_E2E=1 to run flaky PTY shell-hook coverage")
+	}
+
+	env := newCLIEnv(t)
+	start := runCurfew(t, env, "", "start")
+	if start.exitCode != 0 {
+		t.Fatalf("start exit code = %d, stderr = %s", start.exitCode, start.stderr)
+	}
+
+	for _, shellKind := range []string{"zsh", "bash", "fish"} {
+		shellKind := shellKind
+		t.Run(shellKind, func(t *testing.T) {
+			session := startShellPTY(t, env, shellKind)
+			waitForPrompt(t, session)
+
+			initPrompts := promptCount(session)
+			writePTYLine(t, session, shellInitCommand(shellKind))
+			waitForPromptCount(t, session, initPrompts+1)
+
+			readyOffset := len(stripANSI(session.output.String()))
+			readyPrompts := promptCount(session)
+			writePTYLine(t, session, "echo ready")
+			waitForPromptCount(t, session, readyPrompts+1)
+			readyOutput := cleanedOutputAfter(session, readyOffset)
+			if !strings.Contains(readyOutput, "ready") {
+				t.Fatalf("expected allowed command output, got:\n%s", readyOutput)
+			}
+
+			startOffset := session.output.Len()
+			blockedPrompts := promptCount(session)
+			writePTYLine(t, session, "blocked-testcmd")
+			waitForPTYTextAfter(t, session, "Type the passphrase to continue", startOffset)
+			writePTYLine(t, session, "nope")
+			waitForPromptCount(t, session, blockedPrompts+1)
+			blockedOutput := stripANSI(session.output.String()[startOffset:])
+			lower := strings.ToLower(blockedOutput)
+			if strings.Contains(lower, "command not found") || strings.Contains(lower, "unknown command") {
+				t.Fatalf("blocked command should not reach the shell, got:\n%s", blockedOutput)
+			}
+
+			afterOffset := len(stripANSI(session.output.String()))
+			afterPrompts := promptCount(session)
+			writePTYLine(t, session, "echo after")
+			waitForPromptCount(t, session, afterPrompts+1)
+			afterOutput := cleanedOutputAfter(session, afterOffset)
+			if !strings.Contains(afterOutput, "after") {
+				t.Fatalf("expected shell to remain usable after block, got:\n%s", afterOutput)
+			}
+
+			statusOffset := len(stripANSI(session.output.String()))
+			statusPrompts := promptCount(session)
+			writePTYLine(t, session, "curfew status")
+			waitForPromptCount(t, session, statusPrompts+1)
+			statusOutput := cleanedOutputAfter(session, statusOffset)
+			if !strings.Contains(statusOutput, "Snoozes left:") {
+				t.Fatalf("expected status output, got:\n%s", statusOutput)
+			}
+
+			stopCurfewPTY(t, session, "exit\n")
+		})
+	}
+}
+
 func newCLIEnv(t *testing.T) map[string]string {
 	t.Helper()
 
 	dir := t.TempDir()
 	cfg := config.Default()
 	cfg.Schedule.Timezone = "America/Los_Angeles"
+	cfg.Rules.Rule = append(cfg.Rules.Rule, config.RuleEntry{Pattern: "blocked-testcmd", Action: "block"})
 
 	xdgConfig := filepath.Join(dir, ".config")
 	xdgData := filepath.Join(dir, ".local", "share")
@@ -304,6 +417,78 @@ func startCurfewPTY(t *testing.T, env map[string]string, args ...string) *ptySes
 	return session
 }
 
+func startShellPTY(t *testing.T, env map[string]string, shellKind string) *ptySession {
+	t.Helper()
+
+	shellPath, err := exec.LookPath(shellKind)
+	if err != nil {
+		t.Skipf("%s is not installed", shellKind)
+	}
+
+	args := []string{"-i"}
+	command := exec.Command(shellPath, args...)
+	command.Dir = repoRoot(t)
+
+	environment := os.Environ()
+	for key, value := range env {
+		environment = append(environment, key+"="+value)
+	}
+	environment = append(environment,
+		"PATH="+filepath.Dir(mustBuildBinary(t))+":"+os.Getenv("PATH"),
+		"TERM=xterm-256color",
+	)
+	switch shellKind {
+	case "zsh":
+		zdotdir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(zdotdir, ".zshrc"), []byte("PROMPT='PROMPT> '\nRPROMPT=''\n"), 0o644); err != nil {
+			t.Fatalf("write .zshrc: %v", err)
+		}
+		environment = append(environment, "ZDOTDIR="+zdotdir)
+	case "bash":
+		rcPath := filepath.Join(t.TempDir(), ".bashrc")
+		if err := os.WriteFile(rcPath, []byte("PS1='PROMPT> '\n"), 0o644); err != nil {
+			t.Fatalf("write .bashrc: %v", err)
+		}
+		command.Args = []string{shellPath, "--noprofile", "--rcfile", rcPath, "-i"}
+	case "fish":
+		configHome := env["XDG_CONFIG_HOME"]
+		if err := os.MkdirAll(filepath.Join(configHome, "fish"), 0o755); err != nil {
+			t.Fatalf("mkdir fish config: %v", err)
+		}
+		configText := "set -g fish_greeting\nfunction fish_prompt\n  printf 'PROMPT> '\nend\n"
+		if err := os.WriteFile(filepath.Join(configHome, "fish", "config.fish"), []byte(configText), 0o644); err != nil {
+			t.Fatalf("write fish config: %v", err)
+		}
+	}
+	command.Env = environment
+
+	ptmx, err := pty.Start(command)
+	if err != nil {
+		t.Fatalf("start shell pty: %v", err)
+	}
+
+	session := &ptySession{
+		ptmx: ptmx,
+		done: make(chan error, 1),
+	}
+
+	go func() {
+		_, _ = io.Copy(&session.output, ptmx)
+		session.done <- command.Wait()
+	}()
+
+	return session
+}
+
+func shellInitCommand(kind string) string {
+	switch kind {
+	case "fish":
+		return "curfew init fish | source"
+	default:
+		return `eval "$(curfew init ` + kind + `)"`
+	}
+}
+
 func waitForPTYText(t *testing.T, session *ptySession, want string) string {
 	t.Helper()
 
@@ -322,9 +507,7 @@ func waitForPTYText(t *testing.T, session *ptySession, want string) string {
 func stopCurfewPTY(t *testing.T, session *ptySession, input string) {
 	t.Helper()
 
-	if _, err := session.ptmx.Write([]byte(input)); err != nil {
-		t.Fatalf("write pty input: %v", err)
-	}
+	writePTY(t, session, input)
 	select {
 	case err := <-session.done:
 		_ = session.ptmx.Close()
@@ -338,6 +521,73 @@ func stopCurfewPTY(t *testing.T, session *ptySession, input string) {
 		_ = session.ptmx.Close()
 		t.Fatalf("timed out waiting for PTY command to exit\noutput:\n%s", stripANSI(session.output.String()))
 	}
+}
+
+func writePTY(t *testing.T, session *ptySession, input string) {
+	t.Helper()
+
+	if _, err := session.ptmx.Write([]byte(input)); err != nil {
+		t.Fatalf("write pty input: %v", err)
+	}
+}
+
+func writePTYLine(t *testing.T, session *ptySession, input string) {
+	t.Helper()
+	for _, char := range input {
+		writePTY(t, session, string(char))
+		time.Sleep(5 * time.Millisecond)
+	}
+	writePTY(t, session, "\n")
+}
+
+func waitForPrompt(t *testing.T, session *ptySession) string {
+	t.Helper()
+	return waitForPTYText(t, session, "PROMPT>")
+}
+
+func promptCount(session *ptySession) int {
+	return strings.Count(stripANSI(session.output.String()), "PROMPT>")
+}
+
+func waitForPromptCount(t *testing.T, session *ptySession, want int) string {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		clean := stripANSI(session.output.String())
+		if strings.Count(clean, "PROMPT>") >= want {
+			return clean
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for prompt count %d in PTY output:\n%s", want, stripANSI(session.output.String()))
+	return ""
+}
+
+func waitForPTYTextAfter(t *testing.T, session *ptySession, want string, offset int) string {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		full := session.output.String()
+		if offset > len(full) {
+			offset = len(full)
+		}
+		if strings.Contains(full[offset:], want) {
+			return stripANSI(full)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %q in PTY output after %d bytes:\n%s", want, offset, stripANSI(session.output.String()))
+	return ""
+}
+
+func cleanedOutputAfter(session *ptySession, offset int) string {
+	clean := stripANSI(session.output.String())
+	if offset > len(clean) {
+		offset = len(clean)
+	}
+	return clean[offset:]
 }
 
 func mustBuildBinary(t *testing.T) string {

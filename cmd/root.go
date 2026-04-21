@@ -31,12 +31,19 @@ func Execute() error {
 }
 
 func newRootCmd(application *app.App) *cobra.Command {
+	var showVersion bool
+
 	root := &cobra.Command{
 		Use:           "curfew",
 		Short:         "Protect your quiet hours from risky terminal commands",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if showVersion {
+				fmt.Fprintln(cmd.OutOrStdout(), versionString())
+				return nil
+			}
 			if !application.HasConfig() {
 				if !isInteractiveSession() {
 					return errors.New("curfew is not configured yet; run `curfew config edit` in a terminal")
@@ -77,8 +84,21 @@ func newRootCmd(application *app.App) *cobra.Command {
 	root.AddCommand(newHistoryCmd(application))
 	root.AddCommand(newStatsCmd(application))
 	root.AddCommand(newConfigCmd(application))
+	root.AddCommand(newVersionCmd())
+	root.Flags().BoolVarP(&showVersion, "version", "v", false, "version for curfew")
 
 	return root
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Show curfew version",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Fprintln(cmd.OutOrStdout(), versionString())
+		},
+	}
 }
 
 func newStatusCmd(application *app.App) *cobra.Command {
