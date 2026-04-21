@@ -64,11 +64,20 @@ func TestCheckHistoryStatsAndSnooze(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
+	if stats.TotalNights < 1 {
+		t.Fatalf("total nights = %d, want at least 1", stats.TotalNights)
+	}
+	if stats.AdherentNights != stats.RespectedNights+stats.SnoozedNights {
+		t.Fatalf("adherent nights = %d, want %d", stats.AdherentNights, stats.RespectedNights+stats.SnoozedNights)
+	}
 	if stats.OverriddenNights < 1 {
 		t.Fatalf("overridden nights = %d, want at least 1", stats.OverriddenNights)
 	}
 	if stats.MostAttemptedCommand != "claude" {
 		t.Fatalf("most attempted command = %q, want claude", stats.MostAttemptedCommand)
+	}
+	if len(stats.TopCommands) == 0 || stats.TopCommands[0].Command != "claude" {
+		t.Fatalf("top commands = %+v, want claude first", stats.TopCommands)
 	}
 
 	session, snoozedUntil, remaining, err := application.Snooze(context.Background(), 15*time.Minute)
@@ -259,6 +268,79 @@ func TestQuietCompletedSessionsAppearInHistoryAndStats(t *testing.T) {
 	}
 	if stats.RespectedNights < 2 {
 		t.Fatalf("respected nights = %d, want at least 2", stats.RespectedNights)
+	}
+}
+
+func TestHistoryDetailsIncludeOrderedEvents(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	now := time.Date(2026, 4, 23, 23, 30, 0, 0, location)
+	application, _ := newTestApp(t, now)
+
+	_, err = application.Check(context.Background(), "claude", CheckOptions{
+		Shell: "zsh",
+		In:    strings.NewReader("nope\n"),
+		Out:   &strings.Builder{},
+	})
+	if err != nil {
+		t.Fatalf("blocked check: %v", err)
+	}
+	_, err = application.Check(context.Background(), "claude", CheckOptions{
+		Shell: "zsh",
+		In:    strings.NewReader("i am choosing to break my own rule\n"),
+		Out:   &strings.Builder{},
+	})
+	if err != nil {
+		t.Fatalf("allowed check: %v", err)
+	}
+
+	details, err := application.HistoryDetails(context.Background(), "2026-04-23")
+	if err != nil {
+		t.Fatalf("history details: %v", err)
+	}
+	if !details.Found {
+		t.Fatal("expected history details to be found")
+	}
+	if details.Session.Status != "overrode" {
+		t.Fatalf("session status = %q, want overrode", details.Session.Status)
+	}
+	if len(details.Events) != 2 {
+		t.Fatalf("event count = %d, want 2", len(details.Events))
+	}
+	if details.Events[0].Outcome != "blocked" || details.Events[1].Outcome != "overridden" {
+		t.Fatalf("event outcomes = %+v, want blocked then overridden", details.Events)
+	}
+	if details.Events[0].Shell != "zsh" || details.Events[0].MatchedRule != "claude" {
+		t.Fatalf("first event = %+v, want shell zsh and matched rule claude", details.Events[0])
+	}
+}
+
+func TestHistoryDetailsMaterializeQuietNight(t *testing.T) {
+	t.Parallel()
+
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	now := time.Date(2026, 4, 21, 12, 0, 0, 0, location)
+	application, _ := newTestApp(t, now)
+
+	details, err := application.HistoryDetails(context.Background(), "2026-04-20")
+	if err != nil {
+		t.Fatalf("history details: %v", err)
+	}
+	if !details.Found {
+		t.Fatal("expected quiet night details to be found")
+	}
+	if details.Session.Status != "respected" {
+		t.Fatalf("session status = %q, want respected", details.Session.Status)
+	}
+	if len(details.Events) != 0 {
+		t.Fatalf("quiet night events = %+v, want none", details.Events)
 	}
 }
 

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
@@ -165,6 +166,132 @@ func (s *SQLite) History(ctx context.Context, startDate string) ([]HistoryRecord
 	return history, rows.Err()
 }
 
+func (s *SQLite) SessionDetails(ctx context.Context, date string) (SessionDetails, error) {
+	row := s.db.QueryRowContext(
+		ctx,
+		`WITH event_rollup AS (
+			SELECT
+			  session_date,
+			  SUM(CASE WHEN outcome = 'blocked' THEN 1 ELSE 0 END) AS blocked_count,
+			  SUM(CASE WHEN outcome = 'overridden' THEN 1 ELSE 0 END) AS overridden_count
+			FROM events
+			WHERE session_date = ?
+			GROUP BY session_date
+		)
+		SELECT
+		  s.date,
+		  s.bedtime_configured,
+		  s.wake_configured,
+		  s.first_blocked_at,
+		  s.last_command_at,
+		  s.snoozes_used,
+		  s.skipped,
+		  s.forced_active,
+		  COALESCE(e.blocked_count, 0),
+		  COALESCE(e.overridden_count, 0)
+		FROM sessions s
+		LEFT JOIN event_rollup e ON e.session_date = s.date
+		WHERE s.date = ?`,
+		date, date,
+	)
+
+	var details SessionDetails
+	var firstBlocked sql.NullString
+	var lastCommand sql.NullString
+	var skipped int
+	var forcedActive int
+	if err := row.Scan(
+		&details.Session.Date,
+		&details.Session.BedtimeConfigured,
+		&details.Session.WakeConfigured,
+		&firstBlocked,
+		&lastCommand,
+		&details.Session.SnoozesUsed,
+		&skipped,
+		&forcedActive,
+		&details.Session.BlockedCount,
+		&details.Session.Overrides,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SessionDetails{}, nil
+		}
+		return SessionDetails{}, err
+	}
+
+	details.Found = true
+	details.Session.FirstBlockedAt = parseOptionalTime(firstBlocked)
+	details.Session.LastCommandAt = parseOptionalTime(lastCommand)
+	details.Session.Skipped = skipped == 1
+	details.Session.ForcedActive = forcedActive == 1
+	details.Session.Status = summarizeStatus(details.Session.Skipped, details.Session.SnoozesUsed, details.Session.Overrides)
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT session_date, timestamp, command, matched_rule, action, outcome, tier, shell
+		 FROM events
+		 WHERE session_date = ?
+		 ORDER BY timestamp ASC, id ASC`,
+		date,
+	)
+	if err != nil {
+		return SessionDetails{}, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var event Event
+		var timestamp int64
+		var matchedRule sql.NullString
+		var tier sql.NullString
+		var shell sql.NullString
+		if err := rows.Scan(&event.SessionDate, &timestamp, &event.Command, &matchedRule, &event.Action, &event.Outcome, &tier, &shell); err != nil {
+			return SessionDetails{}, err
+		}
+		event.Timestamp = time.Unix(timestamp, 0).UTC()
+		event.MatchedRule = matchedRule.String
+		event.Tier = tier.String
+		event.Shell = shell.String
+		details.Events = append(details.Events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return SessionDetails{}, err
+	}
+
+	return details, nil
+}
+
+func (s *SQLite) TopCommands(ctx context.Context, startDate string, limit int) ([]CommandStat, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT command, COUNT(*)
+		 FROM events
+		 WHERE session_date >= ?
+		   AND action IN ('block', 'warn', 'delay')
+		 GROUP BY command
+		 ORDER BY COUNT(*) DESC, command ASC
+		 LIMIT ?`,
+		startDate, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []CommandStat
+	for rows.Next() {
+		var stat CommandStat
+		if err := rows.Scan(&stat.Command, &stat.Count); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
+	}
+	return stats, rows.Err()
+}
+
 func (s *SQLite) Stats(ctx context.Context, startDate string) (Stats, error) {
 	history, err := s.History(ctx, startDate)
 	if err != nil {
@@ -172,6 +299,7 @@ func (s *SQLite) Stats(ctx context.Context, startDate string) (Stats, error) {
 	}
 
 	var stats Stats
+	stats.TotalNights = len(history)
 	for _, record := range history {
 		switch record.Status {
 		case "respected":
@@ -181,6 +309,10 @@ func (s *SQLite) Stats(ctx context.Context, startDate string) (Stats, error) {
 		case "overrode":
 			stats.OverriddenNights++
 		}
+	}
+	stats.AdherentNights = stats.RespectedNights + stats.SnoozedNights
+	if stats.TotalNights > 0 {
+		stats.AdherenceRate = float64(stats.AdherentNights) / float64(stats.TotalNights)
 	}
 
 	streak := 0
@@ -204,18 +336,14 @@ func (s *SQLite) Stats(ctx context.Context, startDate string) (Stats, error) {
 	}
 	stats.LongestStreak = longest
 
-	row := s.db.QueryRowContext(
-		ctx,
-		`SELECT command, COUNT(*)
-		 FROM events
-		 WHERE session_date >= ?
-		   AND action IN ('block', 'warn', 'delay')
-		 GROUP BY command
-		 ORDER BY COUNT(*) DESC, command ASC
-		 LIMIT 1`,
-		startDate,
-	)
-	_ = row.Scan(&stats.MostAttemptedCommand, &stats.MostAttemptedCount)
+	stats.TopCommands, err = s.TopCommands(ctx, startDate, 5)
+	if err != nil {
+		return Stats{}, err
+	}
+	if len(stats.TopCommands) > 0 {
+		stats.MostAttemptedCommand = stats.TopCommands[0].Command
+		stats.MostAttemptedCount = stats.TopCommands[0].Count
+	}
 
 	return stats, nil
 }
@@ -254,4 +382,15 @@ func nullIfEmpty(value string) any {
 		return nil
 	}
 	return value
+}
+
+func parseOptionalTime(value sql.NullString) *time.Time {
+	if !value.Valid {
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value.String)
+	if err != nil {
+		return nil
+	}
+	return &parsed
 }

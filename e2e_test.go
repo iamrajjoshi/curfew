@@ -2,6 +2,7 @@ package main_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -60,8 +61,44 @@ func TestCLIEndToEndForceCheckAndHistory(t *testing.T) {
 	if stats.exitCode != 0 {
 		t.Fatalf("stats exit code = %d, stderr = %s", stats.exitCode, stats.stderr)
 	}
-	if !strings.Contains(stats.stdout, "Most-attempted after-hours command: claude") {
-		t.Fatalf("expected stats to mention claude, got:\n%s", stats.stdout)
+	if !strings.Contains(stats.stdout, "Top after-hours commands:") || !strings.Contains(stats.stdout, "claude (2)") {
+		t.Fatalf("expected stats to mention claude in top commands, got:\n%s", stats.stdout)
+	}
+
+	historyJSON := runCurfew(t, env, "", "history", "--days", "7", "--json")
+	if historyJSON.exitCode != 0 {
+		t.Fatalf("history --json exit code = %d, stderr = %s", historyJSON.exitCode, historyJSON.stderr)
+	}
+	var historyPayload []map[string]any
+	if err := json.Unmarshal([]byte(historyJSON.stdout), &historyPayload); err != nil {
+		t.Fatalf("unmarshal history json: %v\n%s", err, historyJSON.stdout)
+	}
+	if len(historyPayload) == 0 || historyPayload[0]["date"] == nil {
+		t.Fatalf("unexpected history json payload: %+v", historyPayload)
+	}
+	sessionDate, ok := historyPayload[0]["date"].(string)
+	if !ok || sessionDate == "" {
+		t.Fatalf("unexpected session date in history payload: %+v", historyPayload[0])
+	}
+
+	show := runCurfew(t, env, "", "history", "show", sessionDate)
+	if show.exitCode != 0 {
+		t.Fatalf("history show exit code = %d, stderr = %s", show.exitCode, show.stderr)
+	}
+	if !strings.Contains(show.stdout, "Date: "+sessionDate) || !strings.Contains(show.stdout, "Events") {
+		t.Fatalf("unexpected history show output:\n%s", show.stdout)
+	}
+
+	statsJSON := runCurfew(t, env, "", "stats", "--days", "7", "--json")
+	if statsJSON.exitCode != 0 {
+		t.Fatalf("stats --json exit code = %d, stderr = %s", statsJSON.exitCode, statsJSON.stderr)
+	}
+	var statsPayload map[string]any
+	if err := json.Unmarshal([]byte(statsJSON.stdout), &statsPayload); err != nil {
+		t.Fatalf("unmarshal stats json: %v\n%s", err, statsJSON.stdout)
+	}
+	if statsPayload["top_commands"] == nil || statsPayload["adherence_rate"] == nil {
+		t.Fatalf("unexpected stats json payload: %+v", statsPayload)
 	}
 }
 

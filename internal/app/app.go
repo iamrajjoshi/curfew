@@ -371,6 +371,18 @@ func (a *App) History(ctx context.Context, days int) ([]store.HistoryRecord, err
 	return a.Store.History(ctx, historyStartDate(cfg, now, days))
 }
 
+func (a *App) HistoryDetails(ctx context.Context, date string) (store.SessionDetails, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return store.SessionDetails{}, err
+	}
+	now := a.Now()
+	if err := a.materializeSessionDate(ctx, cfg, now, date); err != nil {
+		return store.SessionDetails{}, err
+	}
+	return a.Store.SessionDetails(ctx, date)
+}
+
 func (a *App) Stats(ctx context.Context, days int) (store.Stats, error) {
 	cfg, err := a.LoadConfig()
 	if err != nil {
@@ -591,6 +603,29 @@ func (a *App) materializeCompletedSessions(ctx context.Context, cfg config.Confi
 		}
 	}
 	return nil
+}
+
+func (a *App) materializeSessionDate(ctx context.Context, cfg config.Config, now time.Time, date string) error {
+	location, err := schedule.ResolveLocation(cfg.Schedule.Timezone)
+	if err != nil {
+		return err
+	}
+	sessionDate, err := time.ParseInLocation("2006-01-02", date, location)
+	if err != nil {
+		return err
+	}
+	session, err := schedule.SessionForDate(sessionDate, cfg, location)
+	if err != nil {
+		return err
+	}
+	if session.Wake.After(now.In(location)) {
+		return nil
+	}
+	return a.Store.UpsertSession(ctx, store.SessionRecord{
+		Date:              session.Date,
+		BedtimeConfigured: session.BedtimeText,
+		WakeConfigured:    session.WakeText,
+	})
 }
 
 func historyStartDate(cfg config.Config, now time.Time, days int) string {

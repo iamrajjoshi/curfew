@@ -16,6 +16,7 @@ import (
 	"github.com/iamrajjoshi/curfew/internal/schedule"
 	"github.com/iamrajjoshi/curfew/internal/setup"
 	"github.com/iamrajjoshi/curfew/internal/shell"
+	"github.com/iamrajjoshi/curfew/internal/store"
 	"github.com/iamrajjoshi/curfew/internal/tui"
 )
 
@@ -427,30 +428,39 @@ func newDoctorCmd(application *app.App) *cobra.Command {
 
 func newHistoryCmd(application *app.App) *cobra.Command {
 	var days int
+	var jsonMode bool
 	command := &cobra.Command{
 		Use:   "history",
 		Short: "Show recent adherence history",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			records, err := application.History(context.Background(), days)
 			if err != nil {
 				return err
+			}
+			if jsonMode {
+				fmt.Fprintln(cmd.OutOrStdout(), application.JSON(records))
+				return nil
 			}
 			if len(records) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No history yet.")
 				return nil
 			}
 			for _, record := range records {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s  %-9s snoozes=%d overrides=%d blocked=%d\n", record.Date, record.Status, record.SnoozesUsed, record.Overrides, record.BlockedCount)
+				fmt.Fprintln(cmd.OutOrStdout(), renderHistorySummary(record))
 			}
 			return nil
 		},
 	}
 	command.Flags().IntVar(&days, "days", 7, "number of days to show")
+	command.Flags().BoolVar(&jsonMode, "json", false, "print JSON output")
+	command.AddCommand(newHistoryShowCmd(application))
 	return command
 }
 
 func newStatsCmd(application *app.App) *cobra.Command {
 	var days int
+	var jsonMode bool
 	command := &cobra.Command{
 		Use:   "stats",
 		Short: "Show numeric adherence stats",
@@ -459,19 +469,125 @@ func newStatsCmd(application *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if jsonMode {
+				payload := struct {
+					WindowDays int `json:"window_days"`
+					store.Stats
+				}{
+					WindowDays: days,
+					Stats:      stats,
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), application.JSON(payload))
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Total nights: %d\n", stats.TotalNights)
 			fmt.Fprintf(cmd.OutOrStdout(), "Respected nights: %d\n", stats.RespectedNights)
 			fmt.Fprintf(cmd.OutOrStdout(), "Snoozed nights: %d\n", stats.SnoozedNights)
 			fmt.Fprintf(cmd.OutOrStdout(), "Overridden nights: %d\n", stats.OverriddenNights)
+			fmt.Fprintf(cmd.OutOrStdout(), "Adherent nights: %d\n", stats.AdherentNights)
+			fmt.Fprintf(cmd.OutOrStdout(), "Adherence rate: %.1f%%\n", stats.AdherenceRate*100)
 			fmt.Fprintf(cmd.OutOrStdout(), "Current streak: %d\n", stats.CurrentStreak)
 			fmt.Fprintf(cmd.OutOrStdout(), "Longest streak: %d\n", stats.LongestStreak)
-			if stats.MostAttemptedCommand != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Most-attempted after-hours command: %s (%d)\n", stats.MostAttemptedCommand, stats.MostAttemptedCount)
+			if len(stats.TopCommands) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "Top after-hours commands:")
+				for _, command := range stats.TopCommands {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %s (%d)\n", command.Command, command.Count)
+				}
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "Top after-hours commands: none")
 			}
 			return nil
 		},
 	}
 	command.Flags().IntVar(&days, "days", 30, "number of days to summarize")
+	command.Flags().BoolVar(&jsonMode, "json", false, "print JSON output")
 	return command
+}
+
+func newHistoryShowCmd(application *app.App) *cobra.Command {
+	var jsonMode bool
+
+	command := &cobra.Command{
+		Use:   "show <YYYY-MM-DD>",
+		Short: "Show detailed history for one curfew night",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := time.Parse("2006-01-02", args[0]); err != nil {
+				return fmt.Errorf("invalid session date %q; expected YYYY-MM-DD", args[0])
+			}
+
+			details, err := application.HistoryDetails(context.Background(), args[0])
+			if err != nil {
+				return err
+			}
+			if jsonMode {
+				fmt.Fprintln(cmd.OutOrStdout(), application.JSON(details))
+				return nil
+			}
+			if !details.Found {
+				fmt.Fprintf(cmd.OutOrStdout(), "No history for %s.\n", args[0])
+				return nil
+			}
+			fmt.Fprint(cmd.OutOrStdout(), renderHistoryDetails(details))
+			return nil
+		},
+	}
+
+	command.Flags().BoolVar(&jsonMode, "json", false, "print JSON output")
+	return command
+}
+
+func renderHistorySummary(record store.HistoryRecord) string {
+	lastCommand := "n/a"
+	if record.LastCommand != nil {
+		lastCommand = record.LastCommand.Format(time.RFC3339)
+	}
+	return fmt.Sprintf(
+		"%s  %-9s snoozes=%d overrides=%d blocked=%d last=%s",
+		record.Date,
+		record.Status,
+		record.SnoozesUsed,
+		record.Overrides,
+		record.BlockedCount,
+		lastCommand,
+	)
+}
+
+func renderHistoryDetails(details store.SessionDetails) string {
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Date: %s", details.Session.Date))
+	lines = append(lines, fmt.Sprintf("Status: %s", details.Session.Status))
+	lines = append(lines, fmt.Sprintf("Configured schedule: %s -> %s", details.Session.BedtimeConfigured, details.Session.WakeConfigured))
+	lines = append(lines, fmt.Sprintf("Snoozes used: %d", details.Session.SnoozesUsed))
+	lines = append(lines, fmt.Sprintf("Skipped: %t", details.Session.Skipped))
+	lines = append(lines, fmt.Sprintf("Forced active: %t", details.Session.ForcedActive))
+	lines = append(lines, fmt.Sprintf("Blocked attempts: %d", details.Session.BlockedCount))
+	lines = append(lines, fmt.Sprintf("Overrides: %d", details.Session.Overrides))
+	if details.Session.FirstBlockedAt != nil {
+		lines = append(lines, fmt.Sprintf("First blocked at: %s", details.Session.FirstBlockedAt.Format(time.RFC3339)))
+	}
+	if details.Session.LastCommandAt != nil {
+		lines = append(lines, fmt.Sprintf("Last command at: %s", details.Session.LastCommandAt.Format(time.RFC3339)))
+	}
+	lines = append(lines, "", "Events", "------")
+	if len(details.Events) == 0 {
+		lines = append(lines, "No intercepted commands.")
+		return strings.Join(lines, "\n") + "\n"
+	}
+	for _, event := range details.Events {
+		line := fmt.Sprintf("%s  %s  action=%s outcome=%s", event.Timestamp.Format(time.RFC3339), event.Command, event.Action, event.Outcome)
+		if event.Tier != "" {
+			line += fmt.Sprintf(" tier=%s", event.Tier)
+		}
+		if event.MatchedRule != "" {
+			line += fmt.Sprintf(" rule=%q", event.MatchedRule)
+		}
+		if event.Shell != "" {
+			line += fmt.Sprintf(" shell=%s", event.Shell)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 func newConfigCmd(application *app.App) *cobra.Command {
