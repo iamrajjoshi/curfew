@@ -62,6 +62,10 @@ func (l Layout) HistoryDB() string {
 	return filepath.Join(l.DataDir(), "history.db")
 }
 
+func (l Layout) ShimDir() string {
+	return filepath.Join(l.DataDir(), "shims")
+}
+
 func (l Layout) RuntimeFile() string {
 	return filepath.Join(l.StateDir(), "runtime.json")
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/iamrajjoshi/curfew/internal/schedule"
 	"github.com/iamrajjoshi/curfew/internal/setup"
 	"github.com/iamrajjoshi/curfew/internal/shell"
+	"github.com/iamrajjoshi/curfew/internal/shim"
 	"github.com/iamrajjoshi/curfew/internal/store"
 	"github.com/iamrajjoshi/curfew/internal/tui"
 )
@@ -81,6 +82,7 @@ func newRootCmd(application *app.App) *cobra.Command {
 	root.AddCommand(newInstallCmd(application))
 	root.AddCommand(newUninstallCmd(application))
 	root.AddCommand(newInitCmd())
+	root.AddCommand(newShimCmd(application))
 	root.AddCommand(newDoctorCmd(application))
 	root.AddCommand(newHistoryCmd(application))
 	root.AddCommand(newStatsCmd(application))
@@ -387,7 +389,7 @@ func newDoctorCmd(application *app.App) *cobra.Command {
 		Use:   "doctor",
 		Short: "Run quick diagnostics",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			diagnostics, err := shell.Diagnose(
+			shellDiagnostics, err := shell.Diagnose(
 				application.Paths,
 				"",
 				os.Getenv("SHELL"),
@@ -397,18 +399,29 @@ func newDoctorCmd(application *app.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Detected shell: %s\n", diagnostics.DetectedShell)
-			fmt.Fprintf(cmd.OutOrStdout(), "Managed rc/config path: %s\n", diagnostics.RCPath)
-			fmt.Fprintf(cmd.OutOrStdout(), "Managed block installed: %t\n", diagnostics.ManagedBlockInstalled)
-			fmt.Fprintf(cmd.OutOrStdout(), "Hook active in current shell: %t\n", diagnostics.HookActive)
-			if diagnostics.HookShell != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Hook shell kind: %s\n", diagnostics.HookShell)
+			shimConfig, err := loadShimConfig(application)
+			if err != nil {
+				return err
+			}
+			shimDiagnostics, err := shim.Diagnose(application.Paths, shellDiagnostics.DetectedShell, shimConfig)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Detected shell: %s\n", shellDiagnostics.DetectedShell)
+			fmt.Fprintf(cmd.OutOrStdout(), "Managed rc/config path: %s\n", shellDiagnostics.RCPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "Managed block installed: %t\n", shellDiagnostics.ManagedBlockInstalled)
+			fmt.Fprintf(cmd.OutOrStdout(), "Hook active in current shell: %t\n", shellDiagnostics.HookActive)
+			if shellDiagnostics.HookShell != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Hook shell kind: %s\n", shellDiagnostics.HookShell)
 			} else {
 				fmt.Fprintln(cmd.OutOrStdout(), "Hook shell kind: n/a")
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Config file: %s (%t)\n", application.Paths.ConfigFile(), application.HasConfig())
 			fmt.Fprintf(cmd.OutOrStdout(), "History DB: %s\n", application.Paths.HistoryDB())
 			fmt.Fprintf(cmd.OutOrStdout(), "Runtime state: %s\n", application.Paths.RuntimeFile())
+			fmt.Fprintf(cmd.OutOrStdout(), "Shim directory: %s\n", shimDiagnostics.ShimDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "Shim PATH block installed: %t\n", shimDiagnostics.PathBlockInstalled)
+			fmt.Fprintf(cmd.OutOrStdout(), "Installed shims: %d\n", len(shimDiagnostics.InstalledCommands))
 
 			if application.HasConfig() {
 				cfg, err := application.LoadConfig()
@@ -424,6 +437,104 @@ func newDoctorCmd(application *app.App) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newShimCmd(application *app.App) *cobra.Command {
+	var explicitShell string
+
+	command := &cobra.Command{
+		Use:   "shim",
+		Short: "Manage PATH shims for non-interactive enforcement",
+	}
+
+	command.AddCommand(&cobra.Command{
+		Use:   "install",
+		Short: "Install curfew PATH shims into your shell config",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			kind := shell.Detect(explicitShell, os.Getenv("SHELL"))
+			if !shell.Supported(kind) {
+				return fmt.Errorf("unsupported shell %q", kind)
+			}
+			cfg, err := loadShimConfig(application)
+			if err != nil {
+				return err
+			}
+			result, err := shim.Install(application.Paths, kind, cfg)
+			if err != nil {
+				return err
+			}
+			if result.PathChanged {
+				fmt.Fprintf(cmd.OutOrStdout(), "Installed %d shims in %s and updated %s\n", len(result.Installed), result.ShimDir, result.RCPath)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Installed %d shims in %s. Shim PATH block already existed in %s\n", len(result.Installed), result.ShimDir, result.RCPath)
+			}
+			return nil
+		},
+	})
+	command.AddCommand(&cobra.Command{
+		Use:   "uninstall",
+		Short: "Remove curfew PATH shims from your shell config",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			kind := shell.Detect(explicitShell, os.Getenv("SHELL"))
+			if !shell.Supported(kind) {
+				return fmt.Errorf("unsupported shell %q", kind)
+			}
+			result, err := shim.Uninstall(application.Paths, kind)
+			if err != nil {
+				return err
+			}
+			if result.PathChanged {
+				fmt.Fprintf(cmd.OutOrStdout(), "Removed %d shims from %s and cleaned %s\n", result.Removed, result.ShimDir, result.RCPath)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Removed %d shims from %s. No shim PATH block found in %s\n", result.Removed, result.ShimDir, result.RCPath)
+			}
+			return nil
+		},
+	})
+	command.AddCommand(&cobra.Command{
+		Use:   "status",
+		Short: "Show curfew shim installation status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			kind := shell.Detect(explicitShell, os.Getenv("SHELL"))
+			if !shell.Supported(kind) {
+				return fmt.Errorf("unsupported shell %q", kind)
+			}
+			cfg, err := loadShimConfig(application)
+			if err != nil {
+				return err
+			}
+			diagnostics, err := shim.Diagnose(application.Paths, kind, cfg)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Detected shell: %s\n", kind)
+			fmt.Fprintf(cmd.OutOrStdout(), "Managed rc/config path: %s\n", diagnostics.RCPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "Shim directory: %s\n", diagnostics.ShimDir)
+			fmt.Fprintf(cmd.OutOrStdout(), "Shim PATH block installed: %t\n", diagnostics.PathBlockInstalled)
+			fmt.Fprintf(cmd.OutOrStdout(), "Installed shims (%d): %s\n", len(diagnostics.InstalledCommands), renderStringList(diagnostics.InstalledCommands))
+			fmt.Fprintf(cmd.OutOrStdout(), "Expected shims (%d): %s\n", len(diagnostics.ExpectedCommands), renderStringList(diagnostics.ExpectedCommands))
+			fmt.Fprintf(cmd.OutOrStdout(), "Missing shims: %s\n", renderStringList(diagnostics.MissingCommands))
+			fmt.Fprintf(cmd.OutOrStdout(), "Extra shims: %s\n", renderStringList(diagnostics.ExtraCommands))
+			return nil
+		},
+	})
+
+	command.PersistentFlags().StringVarP(&explicitShell, "shell", "s", "", "shell to configure")
+	return command
+}
+
+func loadShimConfig(application *app.App) (config.Config, error) {
+	if !application.HasConfig() {
+		return config.Config{}, nil
+	}
+	return application.LoadConfig()
+}
+
+func renderStringList(values []string) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	return strings.Join(values, ", ")
 }
 
 func newHistoryCmd(application *app.App) *cobra.Command {

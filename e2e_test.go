@@ -159,6 +159,148 @@ func TestCLIEndToEndInstallRulesAndStatusFallback(t *testing.T) {
 	}
 }
 
+func TestCLIShimInstallStatusAndUninstall(t *testing.T) {
+	t.Parallel()
+
+	env := newCLIEnv(t)
+	env["SHELL"] = "/bin/zsh"
+
+	install := runCurfew(t, env, "", "shim", "install", "--shell", "zsh")
+	if install.exitCode != 0 {
+		t.Fatalf("shim install exit code = %d, stderr = %s", install.exitCode, install.stderr)
+	}
+	shimDir := filepath.Join(env["XDG_DATA_HOME"], "curfew", "shims")
+	if _, err := os.Stat(filepath.Join(shimDir, "claude")); err != nil {
+		t.Fatalf("expected claude shim to exist: %v", err)
+	}
+	rcPath := filepath.Join(env["HOME"], ".zshrc")
+	bytes, err := os.ReadFile(rcPath)
+	if err != nil {
+		t.Fatalf("read rc file: %v", err)
+	}
+	if !strings.Contains(string(bytes), "curfew shim path") || !strings.Contains(string(bytes), shimDir) {
+		t.Fatalf("expected rc file to include shim path block, got:\n%s", string(bytes))
+	}
+
+	status := runCurfew(t, env, "", "shim", "status", "--shell", "zsh")
+	if status.exitCode != 0 {
+		t.Fatalf("shim status exit code = %d, stderr = %s", status.exitCode, status.stderr)
+	}
+	if !strings.Contains(status.stdout, "Shim PATH block installed: true") {
+		t.Fatalf("expected shim status to report installed path block, got:\n%s", status.stdout)
+	}
+	if !strings.Contains(status.stdout, "Installed shims") || !strings.Contains(status.stdout, "claude") {
+		t.Fatalf("expected shim status to list installed commands, got:\n%s", status.stdout)
+	}
+
+	doctor := runCurfew(t, env, "", "doctor")
+	if doctor.exitCode != 0 {
+		t.Fatalf("doctor exit code = %d, stderr = %s", doctor.exitCode, doctor.stderr)
+	}
+	if !strings.Contains(doctor.stdout, "Shim directory: "+shimDir) {
+		t.Fatalf("expected doctor shim directory, got:\n%s", doctor.stdout)
+	}
+	if !strings.Contains(doctor.stdout, "Shim PATH block installed: true") {
+		t.Fatalf("expected doctor shim path block status, got:\n%s", doctor.stdout)
+	}
+
+	uninstall := runCurfew(t, env, "", "shim", "uninstall", "--shell", "zsh")
+	if uninstall.exitCode != 0 {
+		t.Fatalf("shim uninstall exit code = %d, stderr = %s", uninstall.exitCode, uninstall.stderr)
+	}
+	if _, err := os.Stat(shimDir); !os.IsNotExist(err) {
+		t.Fatalf("expected shim dir to be removed, got err=%v", err)
+	}
+	bytes, err = os.ReadFile(rcPath)
+	if err != nil {
+		t.Fatalf("read rc file after uninstall: %v", err)
+	}
+	if strings.Contains(string(bytes), "curfew shim path") {
+		t.Fatalf("expected shim path block to be removed, got:\n%s", string(bytes))
+	}
+}
+
+func TestCLIShimNonInteractiveExecution(t *testing.T) {
+	t.Parallel()
+
+	env := newCLIEnv(t)
+	configPath := filepath.Join(env["XDG_CONFIG_HOME"], "curfew", "config.toml")
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	cfg.Override.Preset = "custom"
+	cfg.Override.Custom.Curfew.Action = "block"
+	cfg.Override.Custom.Curfew.Method = ""
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	install := runCurfew(t, env, "", "shim", "install", "--shell", "zsh")
+	if install.exitCode != 0 {
+		t.Fatalf("shim install exit code = %d, stderr = %s", install.exitCode, install.stderr)
+	}
+
+	shimDir := filepath.Join(env["XDG_DATA_HOME"], "curfew", "shims")
+	realBinDir := filepath.Join(t.TempDir(), "realbin")
+	if err := os.MkdirAll(realBinDir, 0o755); err != nil {
+		t.Fatalf("mkdir realbin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(realBinDir, "claude-code"), []byte("#!/bin/sh\necho real claude-code\n"), 0o755); err != nil {
+		t.Fatalf("write claude-code: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(realBinDir, "claude"), []byte("#!/bin/sh\necho should-not-run\n"), 0o755); err != nil {
+		t.Fatalf("write claude: %v", err)
+	}
+
+	path := strings.Join([]string{shimDir, realBinDir, filepath.Dir(mustBuildBinary(t)), os.Getenv("PATH")}, ":")
+
+	allowed := exec.Command(filepath.Join(shimDir, "claude-code"))
+	allowed.Env = append(os.Environ(),
+		"PATH="+path,
+		"HOME="+env["HOME"],
+		"XDG_CONFIG_HOME="+env["XDG_CONFIG_HOME"],
+		"XDG_DATA_HOME="+env["XDG_DATA_HOME"],
+		"XDG_STATE_HOME="+env["XDG_STATE_HOME"],
+		"SHELL="+env["SHELL"],
+		"CURFEW_TEST_NOW="+env["CURFEW_TEST_NOW"],
+	)
+	allowedOutput, err := allowed.CombinedOutput()
+	if err != nil {
+		t.Fatalf("allowed shim command failed: %v\n%s", err, allowedOutput)
+	}
+	if !strings.Contains(string(allowedOutput), "real claude-code") {
+		t.Fatalf("expected allowed shim output, got:\n%s", allowedOutput)
+	}
+
+	blocked := exec.Command(filepath.Join(shimDir, "claude"))
+	blocked.Env = allowed.Env
+	blockedOutput, err := blocked.CombinedOutput()
+	if err == nil {
+		t.Fatalf("blocked shim command unexpectedly succeeded:\n%s", blockedOutput)
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("blocked shim error: %v", err)
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Fatalf("blocked shim exit code = %d, want 1\n%s", exitErr.ExitCode(), blockedOutput)
+	}
+	if strings.Contains(string(blockedOutput), "should-not-run") {
+		t.Fatalf("blocked shim executed the real command:\n%s", blockedOutput)
+	}
+
+	hookBypass := exec.Command(filepath.Join(shimDir, "claude"))
+	hookBypass.Env = append(allowed.Env, "CURFEW_HOOK_ACTIVE=1")
+	bypassOutput, err := hookBypass.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook-active shim command failed: %v\n%s", err, bypassOutput)
+	}
+	if !strings.Contains(string(bypassOutput), "should-not-run") {
+		t.Fatalf("expected hook-active bypass to reach real binary, got:\n%s", bypassOutput)
+	}
+}
+
 func TestCLIDoctorReportsShellDiagnostics(t *testing.T) {
 	t.Parallel()
 
